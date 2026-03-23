@@ -13,7 +13,7 @@ import {
   updateDoc,
   getDocs
 } from "firebase/firestore";
-
+import jsPDF from "jspdf";
 import { auth, db, provider } from "./firebase";
 
 export default function App() {
@@ -34,7 +34,62 @@ export default function App() {
   const [deletingFileId, setDeletingFileId] = useState(null);
   const [editingFileId, setEditingFileId] = useState(null);
   const [tempFileName, setTempFileName] = useState("");
-  
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const [expandedMonths, setExpandedMonths] = useState({});
+  const [pages, setPages] = useState([]);
+  const [currentPage, setCurrentPage] = useState(0);
+
+  const downloadPDF = () => {
+    if (!selectedFile || !pages?.length) return;
+
+    const doc = new jsPDF();
+
+    pages.forEach((pageContent, index) => {
+      if (index !== 0) doc.addPage(); // new page after first
+
+      // Title
+      doc.setFontSize(16);
+      doc.text(selectedFile.name || "Diary Entry", 10, 10);
+
+      // Page number
+      doc.setFontSize(10);
+      doc.text(`Page ${index + 1}`, 180, 10, { align: "right" });
+
+      // Date
+      doc.text(
+          new Date(selectedFile.createdAt).toDateString(),
+          10,
+          18
+      );
+
+      // Content
+      doc.setFontSize(12);
+
+      const lines = doc.splitTextToSize(pageContent || "", 180);
+      doc.text(lines, 10, 30);
+    });
+
+    doc.save(`${selectedFile.name || "diary"}.pdf`);
+  };
+  const toggleMonth = (month) => {
+    setExpandedMonths((prev) => ({
+      ...prev,
+      [month]: !prev[month]
+    }));
+  };
+
+  const handleSearchSelect = (file) => {
+    setSelectedFile(file);
+    const filePages = file.content?.length ? file.content : [""];
+    setPages(filePages);
+    setCurrentPage(0);
+    setSelectedDate(new Date(file.createdAt)); // 🔥 switch date
+    setSearchQuery("");
+    setShowSearchDropdown(false);
+  };
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -42,6 +97,26 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const results = files.filter((f) => {
+      const nameMatch = f.name?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      const contentMatch = (f.content || [])
+          .join(" ")
+          .toLowerCase()
+          .includes(searchQuery.toLowerCase());
+
+      return nameMatch || contentMatch;
+    });
+
+    setSearchResults(results);
+  }, [searchQuery, files]);
 
   // close dropdown
   useEffect(() => {
@@ -73,13 +148,13 @@ export default function App() {
 
     const docRef = await addDoc(
         collection(db, "users", user.uid, "files"),
-        { name: "New Entry", content: "", createdAt }
+        { name: "New Entry", content: ["",""], createdAt }
     );
 
     const newFile = {
       id: docRef.id,
       name: "New Entry",
-      content: "",
+      content: ["",""],
       createdAt
     };
 
@@ -127,7 +202,9 @@ export default function App() {
 
   const openFile = (file) => {
     setSelectedFile({ ...file });
-    setContent(file.content || "");
+    const filePages = file.content?.length ? file.content : [""];
+    setPages(filePages);
+    setCurrentPage(0);
     setEditingTitle(false);
   };
   const HoverableDropdownItem = ({ children, onClick }) => {
@@ -152,12 +229,14 @@ export default function App() {
 
       await updateDoc(
           doc(db, "users", user.uid, "files", selectedFile.id),
-          { content }
+          {
+            content: pages
+          }
       );
 
       setFiles((prev) =>
           prev.map((f) =>
-              f.id === selectedFile.id ? { ...f, content } : f
+              f.id === selectedFile.id ? { ...f, content: pages } : f
           )
       );
 
@@ -171,29 +250,57 @@ export default function App() {
   const isSameDay = (d1, d2) =>
       new Date(d1).toDateString() === new Date(d2).toDateString();
 
-  const filteredFiles = files.filter((f) =>
-      isSameDay(f.createdAt, selectedDate)
-  );
+  const filteredFiles = files.filter((f) => {
+    if (!searchQuery) {
+      return isSameDay(f.createdAt, selectedDate);
+    }
 
-  const generateDates = () => {
-    const dates = [];
+    const query = searchQuery.toLowerCase();
+
+    return (
+        f.name?.toLowerCase().includes(query) ||
+        f.content?.toLowerCase().includes(query)
+    );
+  });
+
+  const groupDatesByMonth = () => {
+    const map = {};
+
     const today = new Date();
     const start = new Date(2024, 0, 1);
+
     for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
-      dates.push(new Date(d));
+      const date = new Date(d);
+      const monthKey = date.toLocaleString("default", {
+        month: "long",
+        year: "numeric"
+      });
+
+      if (!map[monthKey]) map[monthKey] = [];
+      map[monthKey].push(new Date(date));
     }
-    return dates.reverse();
+
+    return Object.entries(map).reverse(); // latest month first
   };
 
   if (!user) {
     return (
+        <div>
+        <h1 style={styles.loginTitle}>Diary</h1>
         <div style={styles.center}>
           <div style={styles.card}>
-            <h2>Welcome</h2>
+
+            {/* 🔥 NEW TITLE */}
+
+
+            <h3 style={styles.loginSubtitle}>Welcome</h3>
+
             <button style={styles.googleBtn} onClick={googleLogin}>
               Continue with Google
             </button>
+
           </div>
+        </div>
         </div>
     );
   }
@@ -203,6 +310,43 @@ export default function App() {
         {/* NAVBAR */}
         <div style={styles.navbar}>
           <h2>Diary</h2>
+
+          {/* 🔍 SEARCH BAR */}
+          <div style={styles.navCenter}>
+            <div style={styles.searchWrapper}>
+              <input
+                  type="text"
+                  placeholder="Search..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={styles.navSearch}
+              />
+
+              {/* 🔽 DROPDOWN */}
+              {searchQuery && (
+                  <div style={styles.searchDropdown}>
+                    {searchResults.length > 0 ? (
+                        searchResults.map((f) => (
+                            <div
+                                key={f.id}
+                                style={styles.searchItem}
+                                onClick={() => {
+                                  setSelectedDate(new Date(f.createdAt));
+                                  openFile(f);
+                                  setSearchQuery("");
+                                }}
+                            >
+                              <div>{f.name}</div>
+                              <small>{new Date(f.createdAt).toDateString()}</small>
+                            </div>
+                        ))
+                    ) : (
+                        <div style={styles.noResult}>No results found</div>
+                    )}
+                  </div>
+              )}
+            </div>
+          </div>
 
           <div ref={menuRef} style={styles.userSection}>
             <img
@@ -238,38 +382,57 @@ export default function App() {
 
           {/* LEFT */}
           <div style={styles.leftSidebar}>
-            <input
-                type="date"
-                style={styles.input}
-                max={new Date().toISOString().split("T")[0]}
-                value={selectedDate.toISOString().split("T")[0]}
-                onChange={(e) => {
-                  setSelectedDate(new Date(e.target.value));
-                  setSelectedFile(null);   // ✅ clear file
-                  setContent("");          // ✅ clear content
-                }}
-            />
+            <div style={styles.dateInputWrapper}>
+              <input
+                  type="date"
+                  style={styles.calendarPicker}
+                  max={new Date().toISOString().split("T")[0]}
+                  value={selectedDate.toISOString().split("T")[0]}
+                  onChange={(e) => {
+                    const picked = new Date(e.target.value);
+                    setSelectedDate(picked);
+                    setSelectedFile(null);
+                    setContent("");
+                  }}
+              />
+            </div>
 
             <div style={styles.dateList}>
-              {generateDates().map((d) => {
-                const active = isSameDay(d, selectedDate);
-                return (
+              {groupDatesByMonth().map(([month, dates]) => (
+                  <div key={month}>
+
+                    {/* MONTH HEADER */}
                     <div
-                        key={d}
-                        onClick={() => {
-                          setSelectedDate(d);
-                          setSelectedFile(null);   // ✅ reset
-                          setContent("");
-                        }}
-                        style={{
-                          ...styles.dateItem,
-                          background: active ? "#d2e3fc" : ""
-                        }}
+                        style={styles.monthHeader}
+                        onClick={() => toggleMonth(month)}
                     >
-                      {d.toDateString()}
+                      {expandedMonths[month] ? "▼" : "▶"} {month}
                     </div>
-                );
-              })}
+
+                    {/* DATES */}
+                    {expandedMonths[month] &&
+                        dates.reverse().map((d) => {
+                          const active = isSameDay(d, selectedDate);
+
+                          return (
+                              <div
+                                  key={d.toDateString()}
+                                  onClick={() => {
+                                    setSelectedDate(d);
+                                    setSelectedFile(null);
+                                    setContent("");
+                                  }}
+                                  style={{
+                                    ...styles.dateItem,
+                                    background: active ? "#d2e3fc" : ""
+                                  }}
+                              >
+                                {d.toDateString().slice(0, 10)}
+                              </div>
+                          );
+                        })}
+                  </div>
+              ))}
             </div>
           </div>
 
@@ -400,7 +563,12 @@ export default function App() {
                           {selectedFile.name}
                         </h3>
                     )}
-
+                    <button
+                        style={styles.secondaryBtn}
+                        onClick={downloadPDF}
+                    >
+                      Download PDF
+                    </button>
                     <button
                         style={{
                           ...styles.primaryBtn,
@@ -416,12 +584,44 @@ export default function App() {
                           </>
                       ) : "Save"}
                     </button>
+                    <div style={styles.pagination}>
+                      <button
+                          disabled={currentPage === 0}
+                          onClick={() => setCurrentPage((p) => p - 1)}
+                      >
+                        ⬅ Prev
+                      </button>
+
+                      <span>
+    Page {currentPage + 1} / {pages.length}
+  </span>
+
+                      <button
+                          disabled={currentPage === pages.length - 1}
+                          onClick={() => setCurrentPage((p) => p + 1)}
+                      >
+                        Next ➡
+                      </button>
+
+                      <button
+                          onClick={() => {
+                            setPages([...pages, ""]);
+                            setCurrentPage(pages.length);
+                          }}
+                      >
+                        + Add Page
+                      </button>
+                    </div>
                   </div>
 
                   <textarea
                       style={styles.textarea}
-                      value={content}
-                      onChange={(e) => setContent(e.target.value)}
+                      value={pages[currentPage] || ""}
+                      onChange={(e) => {
+                        const updated = [...pages];
+                        updated[currentPage] = e.target.value;
+                        setPages(updated);
+                      }}
                   />
                 </div>
             ) : (
@@ -490,7 +690,6 @@ const styles = {
     overflowY: "auto",
     scrollBehavior: "smooth"
   },
-  dateItem: { padding: 6, cursor: "pointer" },
 
 
 
@@ -712,5 +911,122 @@ const styles = {
     borderRadius: 6,
     cursor: "pointer",
     width: "100%"
+  },
+
+
+
+
+
+
+  searchTitle: {
+    fontWeight: "500"
+  },
+
+  searchDate: {
+    fontSize: "12px",
+    color: "#666"
+  },
+  navCenter: {
+    flex: 4,
+    display: "flex",
+    justifyContent: "center"
+  },
+
+  searchWrapper: {
+    position: "relative",
+    width: "100%" // 🔥 full width of center
+  },
+
+  navSearch: {
+    width: "90%",// 🔥 increase from 70% → 80% or even 90%
+    padding: "10px 16px",
+    borderRadius: "24px",
+    border: "1px solid #ddd",
+    background: "#f1f3f4",
+    outline: "none",
+    fontSize: "14px"
+  },
+  monthHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "10px 8px",
+    cursor: "pointer",
+    borderRadius: "8px",
+    fontWeight: "600",
+    fontSize: "14px",
+    color: "#202124",
+    transition: "all 0.2s ease"
+  },
+  dateItem: {
+    padding: "6px 10px",
+    cursor: "pointer",
+    fontSize: "13px"
+  },
+  dateInputWrapper: {
+    padding: "8px",
+    marginBottom: "10px"
+  },
+  calendarPicker: {
+    width: "100%",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    border: "1px solid #dadce0",
+    background: "#fff",
+    boxSizing: "border-box", // 🔥 prevents overflow
+    outline: "none",
+    fontSize: "14px"
+  },
+  secondaryBtn: {
+    padding: "8px",
+    background: "#34a853",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    marginLeft: "10px"
+  },
+  loginTitle: {
+    marginBottom: "10px",
+    fontSize: "28px",
+    fontWeight: "700",
+    color: "#1a73e8",
+    textAlign: "center"
+  },
+
+  loginSubtitle: {
+    marginBottom: "20px",
+    fontSize: "16px",
+    color: "#5f6368",
+    textAlign: "center"
+  },
+  pagination: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginTop: "10px"
+  },
+  searchDropdown: {
+    position: "absolute",
+    top: 50,
+    left: 0,
+    width: "400px",
+    background: "#fff",
+    border: "1px solid #ddd",
+    borderRadius: "8px",
+    maxHeight: "300px",
+    overflowY: "auto",
+    zIndex: 100
+  },
+
+  searchItem: {
+    padding: "10px",
+    cursor: "pointer",
+    borderBottom: "1px solid #eee"
+  },
+
+  noResult: {
+    padding: "10px",
+    color: "#888"
   }
 };
