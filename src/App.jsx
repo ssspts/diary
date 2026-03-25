@@ -36,43 +36,45 @@ export default function App() {
   const [tempFileName, setTempFileName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
-  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  // FIX 1: Removed showSearchDropdown state — dropdown now shows whenever
+  // searchQuery is non-empty and there are results (or a "no results" message).
   const [expandedMonths, setExpandedMonths] = useState({});
   const [pages, setPages] = useState([]);
   const [currentPage, setCurrentPage] = useState(0);
 
+  // FIX 2: PDF export now correctly reads page.data (or falls back to string)
+  // instead of using the raw page object, which was printing "[object Object]".
   const downloadPDF = () => {
     if (!selectedFile || !pages?.length) return;
 
     const doc = new jsPDF();
 
-    pages.forEach((pageContent, index) => {
-      if (index !== 0) doc.addPage(); // new page after first
+    pages.forEach((page, index) => {
+      if (index !== 0) doc.addPage();
 
-      // Title
+      // Normalise: pages can be plain strings (old format) or {data, meta} objects
+      const pageContent = typeof page === "string" ? page : (page?.data || "");
+
       doc.setFontSize(16);
       doc.text(selectedFile.name || "Diary Entry", 10, 10);
 
-      // Page number
       doc.setFontSize(10);
       doc.text(`Page ${index + 1}`, 180, 10, { align: "right" });
 
-      // Date
       doc.text(
           new Date(selectedFile.createdAt).toDateString(),
           10,
           18
       );
 
-      // Content
       doc.setFontSize(12);
-
-      const lines = doc.splitTextToSize(pageContent || "", 180);
+      const lines = doc.splitTextToSize(pageContent, 180);
       doc.text(lines, 10, 30);
     });
 
     doc.save(`${selectedFile.name || "diary"}.pdf`);
   };
+
   const toggleMonth = (month) => {
     setExpandedMonths((prev) => ({
       ...prev,
@@ -85,9 +87,8 @@ export default function App() {
     const filePages = file.content?.length ? file.content : [""];
     setPages(filePages);
     setCurrentPage(0);
-    setSelectedDate(new Date(file.createdAt)); // 🔥 switch date
+    setSelectedDate(new Date(file.createdAt));
     setSearchQuery("");
-    setShowSearchDropdown(false);
   };
 
   useEffect(() => {
@@ -98,27 +99,39 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // FIX 1 (cont): Search results are stored as plain file objects (not wrapped
+  // in { file } like before), so the dropdown can render them directly.
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
       return;
     }
 
-    const results = files.filter((f) => {
-      const nameMatch = f.name?.toLowerCase().includes(searchQuery.toLowerCase());
+    const results = (files || []).filter((f) => {
+      const nameMatch = (f.name || "")
+          .toLowerCase()
+          .includes(searchQuery.toLowerCase());
 
-      const contentMatch = (f.content || [])
-          .join(" ")
+      let contentText = "";
+      if (Array.isArray(f.content)) {
+        contentText = f.content
+            .map((p) => (typeof p === "string" ? p : p?.data || ""))
+            .join(" ");
+      } else {
+        contentText = f.content || "";
+      }
+
+      const contentMatch = contentText
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
 
       return nameMatch || contentMatch;
     });
 
+    // Store results as flat file objects (no extra wrapping)
     setSearchResults(results);
   }, [searchQuery, files]);
 
-  // close dropdown
   useEffect(() => {
     const handler = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
@@ -142,19 +155,26 @@ export default function App() {
     await signOut(auth);
   };
 
+  const ensureMeta = (page) => ({
+    data: page.data || "",
+    meta: {
+      template: page.meta?.template || "plain"
+    }
+  });
+
   const addFile = async () => {
     setLoading(true);
     const createdAt = new Date(selectedDate).toISOString();
 
     const docRef = await addDoc(
         collection(db, "users", user.uid, "files"),
-        { name: "New Entry", content: ["",""], createdAt }
+        { name: "New Entry", content: ["", ""], createdAt }
     );
 
     const newFile = {
       id: docRef.id,
       name: "New Entry",
-      content: ["",""],
+      content: ["", ""],
       createdAt
     };
 
@@ -166,52 +186,80 @@ export default function App() {
 
   const deleteFile = async (id) => {
     try {
-      console.log("DELETE FUNCTION CALLED");
-      console.log("Deleting:", id);
-
       await deleteDoc(doc(db, "users", user.uid, "files", id));
-
       setFiles((prev) => prev.filter((f) => f.id !== id));
-
       if (selectedFile?.id === id) {
         setSelectedFile(null);
         setContent("");
       }
-
     } catch (e) {
       console.error("Delete failed:", e);
       alert("Delete failed: " + e.message);
     }
   };
+
   const renameFile = async (id, newName) => {
-    console.log("Edit FUNCTION CALLED");
     await updateDoc(doc(db, "users", user.uid, "files", id), {
       name: newName
     });
-
     setFiles((prev) =>
-        prev.map((f) =>
-            f.id === id ? { ...f, name: newName } : f
-        )
+        prev.map((f) => (f.id === id ? { ...f, name: newName } : f))
     );
-
     if (selectedFile?.id === id) {
       setSelectedFile((prev) => ({ ...prev, name: newName }));
     }
   };
 
   const openFile = (file) => {
-    setSelectedFile({ ...file });
-    const filePages = file.content?.length ? file.content : [""];
+    let filePages = [];
+
+    if (!file.content || file.content.length === 0) {
+      filePages = [ensureMeta({ data: "" })];
+    } else if (typeof file.content[0] === "string") {
+      filePages = file.content.map((text) => ensureMeta({ data: text }));
+    } else {
+      filePages = file.content.map(ensureMeta);
+    }
+
     setPages(filePages);
     setCurrentPage(0);
+    setSelectedFile(file);
     setEditingTitle(false);
   };
+
+  const PAGE_TEMPLATES = {
+    plain: {},
+    lined: {
+      backgroundImage:
+          "repeating-linear-gradient(to bottom, transparent, transparent 28px, #ccc 29px)",
+      backgroundSize: "100% 30px"
+    },
+    dots: {
+      backgroundImage: "radial-gradient(#ccc 1px, transparent 1px)",
+      backgroundSize: "20px 20px"
+    },
+    stars: {
+      backgroundImage: "radial-gradient(#fbbc04 1px, transparent 1px)",
+      backgroundSize: "25px 25px"
+    },
+    dark: {
+      background: "#202124",
+      color: "#fff"
+    }
+  };
+
+  const getTemplateStyle = (template) => {
+    return PAGE_TEMPLATES[template] || PAGE_TEMPLATES.plain;
+  };
+
   const HoverableDropdownItem = ({ children, onClick }) => {
     const [hover, setHover] = React.useState(false);
     return (
         <div
-            style={{ ...styles.userDropdownItem, background: hover ? "#f1f3f4" : "transparent" }}
+            style={{
+              ...styles.userDropdownItem,
+              background: hover ? "#f1f3f4" : "transparent"
+            }}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             onClick={onClick}
@@ -223,23 +271,17 @@ export default function App() {
 
   const saveContent = async () => {
     if (!selectedFile) return;
-
     try {
       setSaving(true);
-
       await updateDoc(
           doc(db, "users", user.uid, "files", selectedFile.id),
-          {
-            content: pages
-          }
+          { content: pages }
       );
-
       setFiles((prev) =>
           prev.map((f) =>
               f.id === selectedFile.id ? { ...f, content: pages } : f
           )
       );
-
     } catch (e) {
       alert("Save failed");
     } finally {
@@ -254,18 +296,18 @@ export default function App() {
     if (!searchQuery) {
       return isSameDay(f.createdAt, selectedDate);
     }
-
     const query = searchQuery.toLowerCase();
-
+    const contentText = Array.isArray(f.content)
+        ? f.content.map((p) => (typeof p === "string" ? p : p?.data || "")).join(" ")
+        : f.content || "";
     return (
         f.name?.toLowerCase().includes(query) ||
-        f.content?.toLowerCase().includes(query)
+        contentText.toLowerCase().includes(query)
     );
   });
 
   const groupDatesByMonth = () => {
     const map = {};
-
     const today = new Date();
     const start = new Date(2024, 0, 1);
 
@@ -275,32 +317,25 @@ export default function App() {
         month: "long",
         year: "numeric"
       });
-
       if (!map[monthKey]) map[monthKey] = [];
       map[monthKey].push(new Date(date));
     }
 
-    return Object.entries(map).reverse(); // latest month first
+    return Object.entries(map).reverse();
   };
 
   if (!user) {
     return (
         <div>
-        <h1 style={styles.loginTitle}>Diary</h1>
-        <div style={styles.center}>
-          <div style={styles.card}>
-
-            {/* 🔥 NEW TITLE */}
-
-
-            <h3 style={styles.loginSubtitle}>Welcome</h3>
-
-            <button style={styles.googleBtn} onClick={googleLogin}>
-              Continue with Google
-            </button>
-
+          <h1 style={styles.loginTitle}>Diary</h1>
+          <div style={styles.center}>
+            <div style={styles.card}>
+              <h3 style={styles.loginSubtitle}>Welcome</h3>
+              <button style={styles.googleBtn} onClick={googleLogin}>
+                Continue with Google
+              </button>
+            </div>
           </div>
-        </div>
         </div>
     );
   }
@@ -311,7 +346,7 @@ export default function App() {
         <div style={styles.navbar}>
           <h2>Diary</h2>
 
-          {/* 🔍 SEARCH BAR */}
+          {/* SEARCH BAR */}
           <div style={styles.navCenter}>
             <div style={styles.searchWrapper}>
               <input
@@ -319,10 +354,12 @@ export default function App() {
                   placeholder="Search..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => {}} // keep for future use
                   style={styles.navSearch}
               />
 
-              {/* 🔽 DROPDOWN */}
+              {/* FIX 1: Dropdown renders whenever searchQuery is non-empty —
+                no longer gated behind showSearchDropdown which was never set. */}
               {searchQuery && (
                   <div style={styles.searchDropdown}>
                     {searchResults.length > 0 ? (
@@ -360,15 +397,16 @@ export default function App() {
 
             {showMenu && (
                 <div style={styles.userDropdown}>
-                  {/* Profile option */}
-                  <HoverableDropdownItem onClick={() => { setShowProfile(true); setShowMenu(false); }}>
+                  <HoverableDropdownItem
+                      onClick={() => {
+                        setShowProfile(true);
+                        setShowMenu(false);
+                      }}
+                  >
                     <img src={user.photoURL} style={styles.userDropdownAvatar} />
                     <span>{user.displayName || "User"}</span>
                   </HoverableDropdownItem>
-
                   <div style={styles.dropdownDivider}></div>
-
-                  {/* Logout option */}
                   <HoverableDropdownItem onClick={logout}>
                     Logout
                   </HoverableDropdownItem>
@@ -379,7 +417,6 @@ export default function App() {
 
         {/* MAIN */}
         <div style={styles.container}>
-
           {/* LEFT */}
           <div style={styles.leftSidebar}>
             <div style={styles.dateInputWrapper}>
@@ -400,8 +437,6 @@ export default function App() {
             <div style={styles.dateList}>
               {groupDatesByMonth().map(([month, dates]) => (
                   <div key={month}>
-
-                    {/* MONTH HEADER */}
                     <div
                         style={styles.monthHeader}
                         onClick={() => toggleMonth(month)}
@@ -409,11 +444,9 @@ export default function App() {
                       {expandedMonths[month] ? "▼" : "▶"} {month}
                     </div>
 
-                    {/* DATES */}
                     {expandedMonths[month] &&
                         dates.reverse().map((d) => {
                           const active = isSameDay(d, selectedDate);
-
                           return (
                               <div
                                   key={d.toDateString()}
@@ -452,8 +485,10 @@ export default function App() {
                             background: active ? "#e8f0fe" : ""
                           }}
                       >
-                        {/* FILE NAME */}
-                        <div style={styles.fileName} onClick={() => !isEditing && openFile(f)}>
+                        <div
+                            style={styles.fileName}
+                            onClick={() => !isEditing && openFile(f)}
+                        >
                           {isEditing ? (
                               <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                                 <input
@@ -485,10 +520,8 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* ACTIONS */}
                         {!isEditing && (
                             <div style={styles.fileActions}>
-                              {/* Edit Icon */}
                               <button
                                   style={styles.iconBtn}
                                   onClick={(e) => {
@@ -499,26 +532,23 @@ export default function App() {
                               >
                                 ✏️
                               </button>
-
-                              {/* Delete Icon */}
                               <button
                                   style={styles.iconBtn}
                                   onClick={async (e) => {
                                     e.stopPropagation();
                                     const confirmDelete = confirm("Delete this file?");
                                     if (!confirmDelete) return;
-
                                     try {
-                                      setDeletingFileId(f.id); // mark as deleting
-                                      await deleteFile(f.id);   // call delete API
+                                      setDeletingFileId(f.id);
+                                      await deleteFile(f.id);
                                     } finally {
-                                      setDeletingFileId(null);  // reset state
+                                      setDeletingFileId(null);
                                     }
                                   }}
-                                  disabled={deletingFileId === f.id} // prevent double click
+                                  disabled={deletingFileId === f.id}
                               >
                                 {deletingFileId === f.id ? (
-                                    <span style={styles.spinner}></span> // show spinner
+                                    <span style={styles.spinner}></span>
                                 ) : (
                                     "🗑️"
                                 )}
@@ -540,8 +570,12 @@ export default function App() {
             {loading ? (
                 <div>Creating file...</div>
             ) : selectedFile ? (
-                <div style={styles.editorContainer}>
-
+                <div
+                    style={{
+                      ...styles.editorContainer,
+                      ...getTemplateStyle(pages[currentPage]?.meta?.template)
+                    }}
+                >
                   <div style={styles.editorHeader}>
                     {editingTitle ? (
                         <div style={styles.titleRow}>
@@ -549,24 +583,27 @@ export default function App() {
                               value={tempTitle}
                               onChange={(e) => setTempTitle(e.target.value)}
                           />
-                          <span onClick={() => {
-                            renameFile(selectedFile.id, tempTitle);
-                            setEditingTitle(false);
-                          }}>✔️</span>
+                          <span
+                              onClick={() => {
+                                renameFile(selectedFile.id, tempTitle);
+                                setEditingTitle(false);
+                              }}
+                          >
+                      ✔️
+                    </span>
                           <span onClick={() => setEditingTitle(false)}>❌</span>
                         </div>
                     ) : (
-                        <h3 onClick={() => {
-                          setTempTitle(selectedFile.name);
-                          setEditingTitle(true);
-                        }}>
+                        <h3
+                            onClick={() => {
+                              setTempTitle(selectedFile.name);
+                              setEditingTitle(true);
+                            }}
+                        >
                           {selectedFile.name}
                         </h3>
                     )}
-                    <button
-                        style={styles.secondaryBtn}
-                        onClick={downloadPDF}
-                    >
+                    <button style={styles.secondaryBtn} onClick={downloadPDF}>
                       Download PDF
                     </button>
                     <button
@@ -582,8 +619,25 @@ export default function App() {
                           <>
                             <span style={styles.spinner}></span> Saving...
                           </>
-                      ) : "Save"}
+                      ) : (
+                          "Save"
+                      )}
                     </button>
+                    <select
+                        value={pages[currentPage]?.meta?.template || "plain"}
+                        onChange={(e) => {
+                          const updated = [...pages];
+                          updated[currentPage] = ensureMeta(updated[currentPage]);
+                          updated[currentPage].meta.template = e.target.value;
+                          setPages(updated);
+                        }}
+                    >
+                      <option value="plain">Plain</option>
+                      <option value="lined">Lined</option>
+                      <option value="dots">Dots</option>
+                      <option value="stars">Stars</option>
+                      <option value="dark">Dark</option>
+                    </select>
                     <div style={styles.pagination}>
                       <button
                           disabled={currentPage === 0}
@@ -591,18 +645,15 @@ export default function App() {
                       >
                         ⬅ Prev
                       </button>
-
                       <span>
-    Page {currentPage + 1} / {pages.length}
-  </span>
-
+                    Page {currentPage + 1} / {pages.length}
+                  </span>
                       <button
                           disabled={currentPage === pages.length - 1}
                           onClick={() => setCurrentPage((p) => p + 1)}
                       >
                         Next ➡
                       </button>
-
                       <button
                           onClick={() => {
                             setPages([...pages, ""]);
@@ -615,11 +666,17 @@ export default function App() {
                   </div>
 
                   <textarea
-                      style={styles.textarea}
-                      value={pages[currentPage] || ""}
+                      style={{
+                        ...styles.textarea,
+                        ...getTemplateStyle(pages[currentPage]?.meta?.template)
+                      }}
+                      value={pages[currentPage]?.data || ""}
                       onChange={(e) => {
                         const updated = [...pages];
-                        updated[currentPage] = e.target.value;
+                        updated[currentPage] = {
+                          ...updated[currentPage],
+                          data: e.target.value
+                        };
                         setPages(updated);
                       }}
                   />
@@ -629,15 +686,16 @@ export default function App() {
             )}
           </div>
         </div>
+
         {/* PROFILE MODAL */}
         {showProfile && (
             <div
                 style={styles.profileOverlay}
-                onClick={() => setShowProfile(false)} // click outside closes modal
+                onClick={() => setShowProfile(false)}
             >
               <div
                   style={styles.profileModal}
-                  onClick={(e) => e.stopPropagation()} // prevent modal click from closing
+                  onClick={(e) => e.stopPropagation()}
               >
                 <img src={user.photoURL} style={styles.profileImage} />
                 <div style={styles.profileName}>{user.displayName}</div>
@@ -652,7 +710,6 @@ export default function App() {
             </div>
         )}
       </div>
-
   );
 }
 
@@ -661,17 +718,21 @@ const styles = {
     height: "100vh",
     display: "flex",
     flexDirection: "column",
-    overflow: "hidden" // ✅ prevents page scroll
+    overflow: "hidden"
   },
-
   container: {
     display: "flex",
     flex: 1,
-    overflow: "hidden" // ✅ critical
+    overflow: "hidden"
   },
-  navbar: { height: 60, display: "flex", justifyContent: "space-between", padding: "0 20px", alignItems: "center", borderBottom: "1px solid #ddd" },
-
-
+  navbar: {
+    height: 60,
+    display: "flex",
+    justifyContent: "space-between",
+    padding: "0 20px",
+    alignItems: "center",
+    borderBottom: "1px solid #ddd"
+  },
   fileList: {
     flex: 1,
     overflowY: "auto"
@@ -682,77 +743,55 @@ const styles = {
     padding: 10,
     display: "flex",
     flexDirection: "column",
-    overflow: "hidden" // ✅ prevents outer scroll
+    overflow: "hidden"
   },
-
   dateList: {
     flex: 1,
     overflowY: "auto",
     scrollBehavior: "smooth"
   },
-
-
-
-
-
-
-  primaryBtn: { padding: 8, background: "#1a73e8", color: "white", border: "none" },
+  primaryBtn: {
+    padding: 8,
+    background: "#1a73e8",
+    color: "white",
+    border: "none"
+  },
   googleBtn: { padding: 10, background: "#ea4335", color: "white" },
-
   userSection: { position: "relative" },
   avatar: { width: 35, borderRadius: "50%" },
-  dropdown: { position: "absolute", right: 0, top: 40, background: "white", border: "1px solid #ddd" },
-
-  editorHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  editorHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center"
+  },
   titleRow: { display: "flex", gap: 10 },
-
-  center: { display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" },
+  center: {
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    height: "100vh"
+  },
   card: { padding: 20, border: "1px solid #ccc", textAlign: "center" },
   input: { width: "100%", padding: 8, marginTop: 10 },
-
   main: {
     flex: 1,
     padding: 20,
     display: "flex",
     flexDirection: "column",
-    overflow: "hidden" // ✅ important
+    overflow: "hidden"
   },
-
   editorContainer: {
     display: "flex",
     flexDirection: "column",
     height: "100%",
     overflow: "hidden"
   },
-
-  textarea: {
-    flex: 1,
-    marginTop: 10,
-    overflowY: "auto" // ✅ only content scrolls
-  },
-
-  floatingAddBtn: {
-    position: "absolute",
-    bottom: 10,
-    left: 10,
-    right: 10,
-    padding: 10,
-    background: "#1a73e8",
-    color: "#fff",
-    border: "none",
-    borderRadius: 6,
-    cursor: "pointer",
-    boxShadow: "0 2px 6px rgba(0,0,0,0.2)"
-  },
-
-
   icon: {
     cursor: "pointer",
     padding: "6px",
-    zIndex: 10,              // ✅ ensures clickable
-    position: "relative"     // ✅ important
+    zIndex: 10,
+    position: "relative"
   },
-
   fileRow: {
     display: "flex",
     alignItems: "center",
@@ -761,7 +800,6 @@ const styles = {
     gap: "10px",
     position: "relative"
   },
-
   fileName: {
     flex: 1,
     cursor: "pointer",
@@ -770,21 +808,19 @@ const styles = {
     textOverflow: "ellipsis",
     zIndex: 1
   },
-
   fileActions: {
     display: "flex",
     gap: "8px",
-    zIndex: 5,            // ✅ above everything
+    zIndex: 5,
     position: "relative"
   },
-
   iconBtn: {
     border: "none",
     background: "transparent",
     cursor: "pointer",
     fontSize: "16px",
     padding: "6px",
-    pointerEvents: "auto" // ✅ force click
+    pointerEvents: "auto"
   },
   spinner: {
     border: "2px solid #fff",
@@ -808,7 +844,6 @@ const styles = {
     alignItems: "center",
     zIndex: 1000
   },
-
   profileModal: {
     background: "#fff",
     padding: 20,
@@ -821,26 +856,22 @@ const styles = {
     flexDirection: "column",
     alignItems: "center"
   },
-
   profileImage: {
     width: 80,
     height: 80,
     borderRadius: "50%",
     marginBottom: 10
   },
-
   profileName: {
     fontWeight: 600,
     fontSize: 18,
     margin: "5px 0"
   },
-
   profileEmail: {
     fontSize: 14,
     color: "#555",
     marginBottom: 15
   },
-
   profileCloseBtn: {
     padding: "8px 12px",
     background: "#1a73e8",
@@ -862,26 +893,19 @@ const styles = {
     flexDirection: "column",
     padding: "8px 0"
   },
-
   userDropdownItem: {
     display: "flex",
     alignItems: "center",
     padding: "8px 16px",
     cursor: "pointer",
     gap: 10,
-    transition: "background 0.2s",
+    transition: "background 0.2s"
   },
-
-  userDropdownItemHover: {
-    background: "#f1f3f4"
-  },
-
   userDropdownAvatar: {
     width: 30,
     height: 30,
     borderRadius: "50%"
   },
-
   dropdownDivider: {
     height: 1,
     background: "#ddd",
@@ -896,12 +920,10 @@ const styles = {
     padding: 10,
     overflow: "hidden"
   },
-
   fileScrollArea: {
     flex: 1,
     overflowY: "auto"
   },
-
   addFileBtn: {
     marginTop: 10,
     padding: 10,
@@ -912,33 +934,17 @@ const styles = {
     cursor: "pointer",
     width: "100%"
   },
-
-
-
-
-
-
-  searchTitle: {
-    fontWeight: "500"
-  },
-
-  searchDate: {
-    fontSize: "12px",
-    color: "#666"
-  },
   navCenter: {
     flex: 4,
     display: "flex",
     justifyContent: "center"
   },
-
   searchWrapper: {
     position: "relative",
-    width: "100%" // 🔥 full width of center
+    width: "100%"
   },
-
   navSearch: {
-    width: "90%",// 🔥 increase from 70% → 80% or even 90%
+    width: "90%",
     padding: "10px 16px",
     borderRadius: "24px",
     border: "1px solid #ddd",
@@ -973,7 +979,7 @@ const styles = {
     borderRadius: "8px",
     border: "1px solid #dadce0",
     background: "#fff",
-    boxSizing: "border-box", // 🔥 prevents overflow
+    boxSizing: "border-box",
     outline: "none",
     fontSize: "14px"
   },
@@ -993,7 +999,6 @@ const styles = {
     color: "#1a73e8",
     textAlign: "center"
   },
-
   loginSubtitle: {
     marginBottom: "20px",
     fontSize: "16px",
@@ -1018,15 +1023,26 @@ const styles = {
     overflowY: "auto",
     zIndex: 100
   },
-
   searchItem: {
     padding: "10px",
     cursor: "pointer",
     borderBottom: "1px solid #eee"
   },
-
   noResult: {
     padding: "10px",
     color: "#888"
+  },
+  textarea: {
+    flex: 1,
+    marginTop: 10,
+    backgroundColor: "#fff",
+    color: "#000",
+    border: "1px solid #ddd",
+    outline: "none",
+    resize: "none",
+    lineHeight: "1.6",
+    padding: "20px",
+    boxShadow: "inset 0 0 5px rgba(0,0,0,0.05)",
+    borderRadius: "12px"
   }
 };
