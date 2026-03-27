@@ -61,13 +61,13 @@ export default function App() {
     diary.setIsDirty(false);
   };
 
-  const handleTemplateSelect = (key) => {
-    const updated = [...diary.pages];
-    const cur = ensureMeta(updated[diary.currentPage]);
-    updated[diary.currentPage] = {
-      ...cur,
-      meta: { ...cur.meta, template: key },
-    };
+  // FIX 3 — applyToAll flag from TemplatePicker
+  const handleTemplateSelect = (key, applyToAll) => {
+    const updated = diary.pages.map((page, i) => {
+      if (!applyToAll && i !== diary.currentPage) return page;
+      const cur = ensureMeta(page);
+      return { ...cur, meta: { ...cur.meta, template: key } };
+    });
     diary.setPages(updated);
     diary.setIsDirty(true);
     diary.setShowTemplatePicker(false);
