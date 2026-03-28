@@ -70,25 +70,25 @@ function Corner({ svgFn, size, position }) {
 }
 
 export default function Editor({
-  selectedFile,
+  selectedDiary,      // the open diary object { id, name, emoji }
+  selectedDate,       // Date object — the currently viewed date
   pages, setPages, currentPage, setCurrentPage,
   isDirty, setIsDirty, saving,
-  editingTitle, setEditingTitle, tempTitle, setTempTitle, titleInputRef,
-  onSave, onOpenTemplatePicker, onRenameFile,
+  onSave, onOpenTemplatePicker,
 }) {
   const textareaRef  = useRef(null);
   const [showPreview, setShowPreview] = useState(false);
 
   useEffect(() => {
     if (textareaRef.current) textareaRef.current.scrollTop = 0;
-  }, [currentPage, selectedFile?.id]);
+  }, [currentPage, selectedDiary?.id, selectedDate?.toDateString?.()]);  // eslint-disable-line
 
-  if (!selectedFile) {
+  if (!selectedDiary) {
     return (
       <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
         <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
-          <div style={{ fontSize:44, marginBottom:12 }}>📝</div>
-          <div style={{ fontSize:15, color:"#80868b" }}>Select an entry or create a new one</div>
+          <div style={{ fontSize:44, marginBottom:12 }}>📔</div>
+          <div style={{ fontSize:15, color:"#80868b" }}>Select a diary and a date to start writing</div>
         </div>
       </main>
     );
@@ -217,17 +217,14 @@ export default function Editor({
                   style={{ fontSize:15, fontWeight:600, border:"none", borderBottom:"2px solid " + decor.btnBg, outline:"none", padding:"1px 0", color: decor.textareaColor, background:"transparent", width:260 }}
                 />
               ) : (
-                <div
-                  style={{ margin:0, fontSize:16, fontWeight:600, color: decor.textareaColor, cursor:"pointer", display:"flex", alignItems:"center", gap:7, userSelect:"none" }}
-                  title="Click to rename"
-                  onClick={() => { setTempTitle(selectedFile.name); setEditingTitle(true); }}
-                >
-                  {selectedFile.name}
+                <div style={{ margin:0, fontSize:16, fontWeight:600, color: decor.textareaColor, display:"flex", alignItems:"center", gap:7 }}>
+                  <span>{selectedDiary.emoji || "📔"}</span>
+                  <span>{selectedDiary.name}</span>
                   {isDirty && <span style={{ width:7, height:7, borderRadius:"50%", background:"#fbbc04", display:"inline-block" }} title="Unsaved" />}
                 </div>
               )}
               <span style={{ fontSize:11, color: decor.textareaColor, opacity:0.6 }}>
-                {new Date(selectedFile.createdAt).toLocaleDateString("default", { weekday:"short", year:"numeric", month:"short", day:"numeric" })}
+                {selectedDate.toLocaleDateString("default", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}
               </span>
             </div>
 
@@ -370,7 +367,10 @@ export default function Editor({
 
       {showPreview && (
         <PdfPreview
-          selectedFile={selectedFile}
+          selectedFile={{
+            name: selectedDiary?.name || "Diary Entry",
+            createdAt: selectedDate?.toISOString() || new Date().toISOString(),
+          }}
           pages={pages}
           onClose={() => setShowPreview(false)}
         />
