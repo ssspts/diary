@@ -1,27 +1,60 @@
 // src/components/Editor.jsx
 import { useRef, useEffect, useState } from "react";
-import { editor as s, shared } from "../styles/tokens";
+import { shared } from "../styles/tokens";
 import { TEMPLATES, HANDWRITING_FONTS, FONT_KEYS, ensureMeta } from "../utils/templates";
 import PdfPreview from "./PdfPreview";
 
-// ── Line-limit constants ──────────────────────────────────────────────────────
-// The textarea uses fontSize 16px and lineHeight 28px.
-// We calculate how many lines fit in the visible textarea height.
-// Rather than measuring DOM height (which is complex), we use a fixed line
-// budget that matches the PDF layout: 25 lines per page (matches PDF maxLines).
-const LINES_PER_PAGE = 30;
-
-// Count logical lines in a string at a given character width.
-// We approximate wrap by splitting on \n and counting each physical line
-// as ceil(chars / CHARS_PER_LINE). This is a proxy — actual wrap depends on
-// font metrics, but gives a consistent budget that matches PDF export.
-const CHARS_PER_LINE = 72; // approx for 16px font in a typical editor width
+const LINES_PER_PAGE = 25;
+const CHARS_PER_LINE = 72;
 
 function countLines(text) {
   if (!text) return 0;
-  return text.split("\n").reduce((sum, line) => {
-    return sum + Math.max(1, Math.ceil((line.length || 1) / CHARS_PER_LINE));
-  }, 0);
+  return text.split("\n").reduce((sum, line) =>
+    sum + Math.max(1, Math.ceil((line.length || 1) / CHARS_PER_LINE)), 0);
+}
+
+// Render a uiDecor SVG string (which is a function of width) into a div overlay.
+// We use a fixed width reference since SVG is responsive via viewBox.
+function SvgOverlay({ svgFn, height, style }) {
+  if (!svgFn || !height) return null;
+  const svgString = svgFn(800); // reference width; SVG will scale via width="100%"
+  // Inject width="100%" so it scales to any container
+  const scalable = svgString.replace(/width="\d+"/, 'width="100%"');
+  return (
+    <div
+      style={{
+        position: "absolute", left: 0, right: 0, ...style,
+        height: height, pointerEvents: "none", overflow: "hidden",
+      }}
+      dangerouslySetInnerHTML={{ __html: scalable }}
+    />
+  );
+}
+
+// Corner SVG placed absolutely at one corner of the editor
+function Corner({ svgFn, size, position }) {
+  if (!svgFn || !size) return null;
+  const svgString = svgFn(size);
+  const posStyle = {};
+  if (position.includes("top"))    posStyle.top    = 0;
+  if (position.includes("bottom")) posStyle.bottom = 0;
+  if (position.includes("left"))   posStyle.left   = 0;
+  if (position.includes("right"))  posStyle.right  = 0;
+
+  // Rotate for each corner
+  const rotMap = { "top-left": 0, "top-right": 90, "bottom-right": 180, "bottom-left": 270 };
+  const rot = rotMap[position] || 0;
+
+  return (
+    <div
+      style={{
+        position: "absolute", ...posStyle, width: size, height: size,
+        pointerEvents: "none", zIndex: 2, opacity: 0.85,
+        transform: `rotate(${rot}deg)`,
+      }}
+      dangerouslySetInnerHTML={{ __html: svgString }}
+    />
+  );
 }
 
 export default function Editor({
@@ -29,24 +62,21 @@ export default function Editor({
   pages, setPages, currentPage, setCurrentPage,
   isDirty, setIsDirty, saving,
   editingTitle, setEditingTitle, tempTitle, setTempTitle, titleInputRef,
-  onSave, onDownloadPdf, onOpenTemplatePicker, onRenameFile,
+  onSave, onOpenTemplatePicker, onRenameFile,
 }) {
-  const textareaRef = useRef(null);
+  const textareaRef  = useRef(null);
   const [showPreview, setShowPreview] = useState(false);
 
-  // FIX 2 — auto-scroll textarea to bottom when switching pages
   useEffect(() => {
     if (textareaRef.current) textareaRef.current.scrollTop = 0;
   }, [currentPage, selectedFile?.id]);
 
   if (!selectedFile) {
     return (
-      <main style={s.pane}>
-        <div style={s.empty}>
-          <div style={{ fontSize: 44, marginBottom: 12 }}>📝</div>
-          <div style={{ fontSize: 15, color: "#80868b" }}>
-            Select an entry or create a new one
-          </div>
+      <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ fontSize:44, marginBottom:12 }}>📝</div>
+          <div style={{ fontSize:15, color:"#80868b" }}>Select an entry or create a new one</div>
         </div>
       </main>
     );
@@ -56,88 +86,51 @@ export default function Editor({
   const currentFontKey = pages[currentPage]?.meta?.font     || "default";
   const currentTpl     = TEMPLATES[currentTplKey]           || TEMPLATES.plain;
   const currentFont    = HANDWRITING_FONTS[currentFontKey]  || HANDWRITING_FONTS.default;
+  const decor          = currentTpl.uiDecor;
 
-  // ── FIX 2: handle text change with line-limit enforcement ─────────────────
+  // ── Line overflow handler ─────────────────────────────────────────────────
   const handleTextChange = (e) => {
-    const newText  = e.target.value;
+    const newText   = e.target.value;
     const lineCount = countLines(newText);
-
     if (lineCount <= LINES_PER_PAGE) {
-      // Normal case — still within this page's budget
       const updated = [...pages];
-      updated[currentPage] = {
-        ...ensureMeta(updated[currentPage]),
-        data: newText,
-      };
+      updated[currentPage] = { ...ensureMeta(updated[currentPage]), data: newText };
       setPages(updated);
       setIsDirty(true);
       return;
     }
-
-    // Over the limit — split at the boundary and push overflow to next page.
-    // Find the character position where lineCount would equal LINES_PER_PAGE.
     const rawLines = newText.split("\n");
-    let budget = LINES_PER_PAGE;
-    let splitIndex = rawLines.length; // default: all lines fit (shouldn't happen here)
-
+    let budget = LINES_PER_PAGE, splitIndex = rawLines.length;
     for (let i = 0; i < rawLines.length; i++) {
-      const wrappedCount = Math.max(1, Math.ceil((rawLines[i].length || 1) / CHARS_PER_LINE));
-      if (budget - wrappedCount < 0) {
-        splitIndex = i;
-        break;
-      }
-      budget -= wrappedCount;
+      const wc = Math.max(1, Math.ceil((rawLines[i].length || 1) / CHARS_PER_LINE));
+      if (budget - wc < 0) { splitIndex = i; break; }
+      budget -= wc;
     }
-
-    const thisPageText     = rawLines.slice(0, splitIndex).join("\n");
-    const overflowText     = rawLines.slice(splitIndex).join("\n");
-
+    const thisText     = rawLines.slice(0, splitIndex).join("\n");
+    const overflowText = rawLines.slice(splitIndex).join("\n");
     const updated = [...pages];
-    // Write current page content up to the limit
-    updated[currentPage] = {
-      ...ensureMeta(updated[currentPage]),
-      data: thisPageText,
-    };
-
-    const nextPageIndex = currentPage + 1;
-
-    if (nextPageIndex < updated.length) {
-      // Prepend overflow to the existing next page
-      const nextPage = ensureMeta(updated[nextPageIndex]);
-      updated[nextPageIndex] = {
-        ...nextPage,
-        data: overflowText + (nextPage.data ? "\n" + nextPage.data : ""),
-      };
+    updated[currentPage] = { ...ensureMeta(updated[currentPage]), data: thisText };
+    const nextIdx = currentPage + 1;
+    if (nextIdx < updated.length) {
+      const np = ensureMeta(updated[nextIdx]);
+      updated[nextIdx] = { ...np, data: overflowText + (np.data ? "\n" + np.data : "") };
     } else {
-      // Create a brand new next page carrying the overflow and same template/font
-      updated.push({
-        ...ensureMeta(""),
-        meta: { template: currentTplKey, font: currentFontKey },
-        data: overflowText,
-      });
+      updated.push({ ...ensureMeta(""), meta:{ template:currentTplKey, font:currentFontKey }, data:overflowText });
     }
-
     setPages(updated);
     setIsDirty(true);
-    // Navigate to the next page automatically
-    setCurrentPage(nextPageIndex);
+    setCurrentPage(nextIdx);
   };
 
   const handleFontChange = (e) => {
     const updated = [...pages];
-    updated[currentPage] = {
-      ...ensureMeta(updated[currentPage]),
-      meta: { template: currentTplKey, font: e.target.value },
-    };
+    updated[currentPage] = { ...ensureMeta(updated[currentPage]), meta:{ template:currentTplKey, font:e.target.value } };
     setPages(updated);
     setIsDirty(true);
   };
 
   const addPage = () => {
-    setPages((prev) => [
-      ...prev,
-      { ...ensureMeta(""), meta: { template: currentTplKey, font: currentFontKey } },
-    ]);
+    setPages((prev) => [...prev, { ...ensureMeta(""), meta:{ template:currentTplKey, font:currentFontKey } }]);
     setCurrentPage(pages.length);
     setIsDirty(true);
   };
@@ -150,130 +143,219 @@ export default function Editor({
     setIsDirty(true);
   };
 
-  const linesUsed     = countLines(pages[currentPage]?.data ?? "");
-  const linesLeft     = LINES_PER_PAGE - linesUsed;
-  const nearLimit     = linesLeft <= 3;
+  const linesLeft = LINES_PER_PAGE - countLines(pages[currentPage]?.data ?? "");
+  const nearLimit = linesLeft <= 3;
+
+  // Ruled-line background for textarea
+  const ruledBg = decor.lineColor
+    ? `repeating-linear-gradient(to bottom, transparent, transparent ${decor.lineSpacingPx - 1}px, ${decor.lineColor} ${decor.lineSpacingPx}px)`
+    : "transparent";
+
+  // Combine base texture + ruled lines
+  const textareaBackground = decor.lineColor
+    ? `${ruledBg}, ${decor.textareaBg}`
+    : decor.textareaBg;
 
   return (
     <>
-    <main style={s.pane}>
-      <div style={s.inner}>
+      {/* ── Whole editor container with template background + border ── */}
+      <main style={{
+        flex: 1, display: "flex", flexDirection: "column", overflow: "hidden",
+        position: "relative",
+        background: decor.containerBg,
+        border: decor.containerBorder,
+        borderRadius: 4,
+        transition: "background 0.3s, border-color 0.3s",
+      }}>
 
-        {/* ── Toolbar ── */}
-        <div style={s.toolbar}>
-          <div style={s.toolbarLeft}>
-            {editingTitle ? (
-              <input
-                ref={titleInputRef}
-                value={tempTitle}
-                onChange={(e) => setTempTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter")  { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }
-                  if (e.key === "Escape") { setEditingTitle(false); }
-                }}
-                onBlur={() => { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }}
-                style={s.titleInput}
-              />
-            ) : (
-              <div
-                style={s.entryTitle}
-                title="Click to rename"
-                onClick={() => { setTempTitle(selectedFile.name); setEditingTitle(true); }}
-              >
-                {selectedFile.name}
-                {isDirty && <span style={s.dirtyDot} title="Unsaved changes" />}
-              </div>
-            )}
-            <span style={s.entryMeta}>
-              {new Date(selectedFile.createdAt).toLocaleDateString("default", {
-                weekday: "short", year: "numeric", month: "short", day: "numeric",
-              })}
-            </span>
-          </div>
+        {/* Corner decorations */}
+        <Corner svgFn={decor.cornerSvg} size={decor.cornerSize} position="top-left" />
+        <Corner svgFn={decor.cornerSvg} size={decor.cornerSize} position="top-right" />
+        <Corner svgFn={decor.cornerSvg} size={decor.cornerSize} position="bottom-left" />
+        <Corner svgFn={decor.cornerSvg} size={decor.cornerSize} position="bottom-right" />
 
-          <div style={s.toolbarRight}>
-            <button style={s.themeBtn} onClick={onOpenTemplatePicker} title="Change page theme">
-              <span style={{ fontSize: 15 }}>{currentTpl.emoji}</span>
-              <span style={{ fontSize: 12 }}>{currentTpl.label}</span>
-              <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>
-            </button>
-
-            <div style={st.fontPickerWrap} title="Handwriting style">
-              <span style={st.fontPickerIcon}>✍</span>
-              <select
-                value={currentFontKey}
-                onChange={handleFontChange}
-                style={{ ...st.fontSelect, fontFamily: currentFont.editorFamily }}
-              >
-                {FONT_KEYS.map((key) => {
-                  const f = HANDWRITING_FONTS[key];
-                  return (
-                    <option key={key} value={key} style={{ fontFamily: f.editorFamily }}>
-                      {f.emoji}  {f.label}
-                    </option>
-                  );
-                })}
-              </select>
+        {/* ── TOOLBAR (header band) ── */}
+        <div style={{
+          position: "relative",
+          background: decor.headerBg,
+          borderBottom: decor.headerBorderBottom,
+          flexShrink: 0,
+          // Extra bottom padding to accommodate the SVG overlay
+          paddingBottom: decor.headerSvgH ? decor.headerSvgH : 0,
+          transition: "background 0.3s",
+          zIndex: 3,
+        }}>
+          {/* Toolbar controls sit above the SVG overlay */}
+          <div style={{
+            display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+            padding: "12px 20px 10px", gap: 12,
+          }}>
+            {/* Left: title + date */}
+            <div style={{ display:"flex", flexDirection:"column", gap:2, minWidth:0 }}>
+              {editingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  value={tempTitle}
+                  onChange={(e) => setTempTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter")  { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }
+                    if (e.key === "Escape") { setEditingTitle(false); }
+                  }}
+                  onBlur={() => { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }}
+                  style={{ fontSize:15, fontWeight:600, border:"none", borderBottom:"2px solid " + decor.btnBg, outline:"none", padding:"1px 0", color: decor.textareaColor, background:"transparent", width:260 }}
+                />
+              ) : (
+                <div
+                  style={{ margin:0, fontSize:16, fontWeight:600, color: decor.textareaColor, cursor:"pointer", display:"flex", alignItems:"center", gap:7, userSelect:"none" }}
+                  title="Click to rename"
+                  onClick={() => { setTempTitle(selectedFile.name); setEditingTitle(true); }}
+                >
+                  {selectedFile.name}
+                  {isDirty && <span style={{ width:7, height:7, borderRadius:"50%", background:"#fbbc04", display:"inline-block" }} title="Unsaved" />}
+                </div>
+              )}
+              <span style={{ fontSize:11, color: decor.textareaColor, opacity:0.6 }}>
+                {new Date(selectedFile.createdAt).toLocaleDateString("default", { weekday:"short", year:"numeric", month:"short", day:"numeric" })}
+              </span>
             </div>
 
-            <button style={shared.btnOutline} onClick={() => setShowPreview(true)}>👁 Preview & Download</button>
+            {/* Right: controls */}
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+              {/* Theme button */}
+              <button
+                style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", border:"1px solid rgba(255,255,255,0.4)", borderRadius:6, background:"rgba(255,255,255,0.25)", cursor:"pointer", fontSize:13, color: decor.textareaColor, whiteSpace:"nowrap", backdropFilter:"blur(2px)" }}
+                onClick={onOpenTemplatePicker}
+                title="Change page theme"
+              >
+                <span style={{ fontSize:15 }}>{currentTpl.emoji}</span>
+                <span style={{ fontSize:12 }}>{currentTpl.label}</span>
+                <span style={{ fontSize:10, opacity:0.6 }}>▾</span>
+              </button>
 
-            <button
-              style={{ ...shared.btnPrimary, background: isDirty ? "#1a73e8" : "#34a853", opacity: saving ? 0.7 : 1 }}
-              onClick={onSave}
-              disabled={saving}
-              title="Save (Ctrl+S / Cmd+S)"
-            >
-              {saving ? <><span style={shared.spinner} /> Saving…</> : isDirty ? "Save" : "✓ Saved"}
-            </button>
+              {/* Font picker */}
+              <div style={{ display:"flex", alignItems:"center", border:"1px solid rgba(255,255,255,0.4)", borderRadius:6, background:"rgba(255,255,255,0.25)", padding:"0 6px 0 8px", gap:4, height:32 }}>
+                <span style={{ fontSize:14, color: decor.textareaColor, flexShrink:0 }}>✍</span>
+                <select
+                  value={currentFontKey}
+                  onChange={handleFontChange}
+                  style={{ border:"none", outline:"none", background:"transparent", fontSize:13, color: decor.textareaColor, cursor:"pointer", maxWidth:130, fontFamily: currentFont.editorFamily }}
+                >
+                  {FONT_KEYS.map((key) => {
+                    const f = HANDWRITING_FONTS[key];
+                    return <option key={key} value={key} style={{ fontFamily:f.editorFamily }}>{f.emoji}  {f.label}</option>;
+                  })}
+                </select>
+              </div>
+
+              {/* Preview & Download */}
+              <button
+                style={{ padding:"7px 12px", background:"rgba(255,255,255,0.25)", color: decor.textareaColor, border:"1px solid rgba(255,255,255,0.4)", borderRadius:6, cursor:"pointer", fontSize:13, backdropFilter:"blur(2px)" }}
+                onClick={() => setShowPreview(true)}
+              >👁 Preview</button>
+
+              {/* Save */}
+              <button
+                style={{ ...shared.btnPrimary, background: decor.btnBg, color: decor.btnColor, opacity: saving ? 0.7 : 1 }}
+                onClick={onSave}
+                disabled={saving}
+                title="Save (Ctrl+S / Cmd+S)"
+              >
+                {saving ? <><span style={shared.spinner} /> Saving…</> : isDirty ? "Save" : "✓ Saved"}
+              </button>
+            </div>
           </div>
+
+          {/* Header SVG decoration band */}
+          <SvgOverlay
+            svgFn={decor.headerSvg}
+            height={decor.headerSvgH}
+            style={{ bottom: 0 }}
+          />
         </div>
 
-        {/* ── Themed + fonted textarea ── */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* ── WRITING AREA ── */}
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", position:"relative" }}>
           <textarea
             ref={textareaRef}
             style={{
-              ...s.textarea,
-              ...currentTpl.editorStyle,
-              color:      currentTpl.editorStyle.color,
+              flex: 1,
+              padding: "16px 24px",
+              border: "none",
+              outline: "none",
+              resize: "none",
+              fontSize: "16px",
+              lineHeight: `${decor.lineSpacingPx}px`,
               fontFamily: currentFont.editorFamily,
-              fontSize:   "16px",
-              lineHeight: "28px",
+              color: decor.textareaColor,
+              background: textareaBackground,
+              backgroundSize: `100% ${decor.lineSpacingPx}px`,
+              backgroundAttachment: "local",
+              // Left margin stripe for sunflower / notebook style
+              paddingLeft: decor.textareaBorderLeft ? "28px" : "24px",
+              borderLeft: decor.textareaBorderLeft || "none",
+              transition: "background 0.3s, color 0.3s",
             }}
             value={pages[currentPage]?.data ?? ""}
             placeholder="Start writing…"
             onChange={handleTextChange}
           />
-          {/* FIX 2 — line counter indicator */}
-          <div style={{
-            ...st.lineCounter,
-            color: nearLimit ? "#d93025" : "#9aa0a6",
-          }}>
-            {linesLeft > 0
-              ? `${linesLeft} line${linesLeft === 1 ? "" : "s"} left on this page`
-              : "Page full — overflow goes to next page automatically"}
+          {/* Line counter */}
+          <div style={{ fontSize:11, padding:"3px 24px 4px", textAlign:"right", flexShrink:0, color: nearLimit ? "#d93025" : decor.textareaColor, opacity: nearLimit ? 1 : 0.5, background: decor.textareaBg }}>
+            {linesLeft > 0 ? `${linesLeft} line${linesLeft === 1 ? "" : "s"} left` : "Page full — continues on next page"}
           </div>
         </div>
 
-        {/* ── Pagination ── */}
-        <div style={s.pagination}>
-          <button style={s.pageBtn} disabled={currentPage === 0}
-            onClick={() => setCurrentPage((p) => p - 1)}>← Prev</button>
-          <span style={s.pageLabel}>Page {currentPage + 1} / {pages.length || 1}</span>
-          <button style={s.pageBtn} disabled={currentPage >= pages.length - 1}
-            onClick={() => setCurrentPage((p) => p + 1)}>Next →</button>
-          <button style={{ ...s.pageBtn, marginLeft: 6 }} onClick={addPage}>+ Page</button>
-          {pages.length > 1 && (
-            <button style={{ ...s.pageBtn, color: "#d93025", borderColor: "#f5c6c6" }} onClick={deletePage}>
-              ✕ Page
-            </button>
-          )}
-        </div>
-      </div>
-    </main>
+        {/* ── PAGINATION (footer band) ── */}
+        <div style={{
+          position: "relative",
+          background: decor.footerBg,
+          borderTop: decor.footerBorderTop,
+          flexShrink: 0,
+          // Extra top padding to accommodate the footer SVG overlay
+          paddingTop: decor.footerSvgH ? decor.footerSvgH : 0,
+          transition: "background 0.3s",
+          zIndex: 3,
+        }}>
+          {/* Footer SVG decoration */}
+          <SvgOverlay
+            svgFn={decor.footerSvg}
+            height={decor.footerSvgH}
+            style={{ top: 0 }}
+          />
 
-      {/* ── PDF Preview modal ── */}
+          {/* Pagination controls */}
+          <div style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px" }}>
+            <button
+              style={{ padding:"5px 10px", border:"1px solid rgba(255,255,255,0.35)", background:"rgba(255,255,255,0.2)", borderRadius:6, cursor:"pointer", fontSize:12, color: decor.textareaColor, backdropFilter:"blur(2px)" }}
+              disabled={currentPage === 0}
+              onClick={() => setCurrentPage((p) => p - 1)}
+            >← Prev</button>
+
+            <span style={{ fontSize:12, color: decor.textareaColor, opacity:0.8, margin:"0 4px" }}>
+              Page {currentPage + 1} / {pages.length || 1}
+            </span>
+
+            <button
+              style={{ padding:"5px 10px", border:"1px solid rgba(255,255,255,0.35)", background:"rgba(255,255,255,0.2)", borderRadius:6, cursor:"pointer", fontSize:12, color: decor.textareaColor, backdropFilter:"blur(2px)" }}
+              disabled={currentPage >= pages.length - 1}
+              onClick={() => setCurrentPage((p) => p + 1)}
+            >Next →</button>
+
+            <button
+              style={{ padding:"5px 10px", border:"1px solid rgba(255,255,255,0.35)", background:"rgba(255,255,255,0.2)", borderRadius:6, cursor:"pointer", fontSize:12, color: decor.textareaColor, marginLeft:6, backdropFilter:"blur(2px)" }}
+              onClick={addPage}
+            >+ Page</button>
+
+            {pages.length > 1 && (
+              <button
+                style={{ padding:"5px 10px", border:"1px solid rgba(255,100,80,0.5)", background:"rgba(255,100,80,0.15)", borderRadius:6, cursor:"pointer", fontSize:12, color:"#d93025" }}
+                onClick={deletePage}
+              >✕ Page</button>
+            )}
+          </div>
+        </div>
+      </main>
+
       {showPreview && (
         <PdfPreview
           selectedFile={selectedFile}
@@ -284,18 +366,3 @@ export default function Editor({
     </>
   );
 }
-
-const st = {
-  fontPickerWrap: {
-    display: "flex", alignItems: "center", border: "1px solid #dadce0",
-    borderRadius: 6, background: "#fff", padding: "0 6px 0 8px", gap: 4, height: 32,
-  },
-  fontPickerIcon: { fontSize: 14, color: "#5f6368", flexShrink: 0 },
-  fontSelect: {
-    border: "none", outline: "none", background: "transparent",
-    fontSize: 13, color: "#3c4043", cursor: "pointer", maxWidth: 130,
-  },
-  lineCounter: {
-    fontSize: 11, padding: "3px 24px 4px", textAlign: "right", flexShrink: 0,
-  },
-};
