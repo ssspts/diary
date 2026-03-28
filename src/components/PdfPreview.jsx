@@ -4,10 +4,13 @@ import jsPDF from "jspdf";
 import { TEMPLATES, HANDWRITING_FONTS, loadFontIntoDoc } from "../utils/templates";
 import { STICKER_CATEGORIES, STICKER_MAP } from "../utils/stickers";
 import ShareDialog from "./ShareDialog";
-
-const CANVAS_W = 595;
-const CANVAS_H = 842;
-const MM_TO_PX  = CANVAS_W / 210;
+import {
+  CANVAS, CANVAS_W, CANVAS_H, MM_TO_PX,
+  wrapWords, MAX_LINES_PER_PAGE,
+  HEADER_H_MM, DATE_Y_MM, TITLE_Y_MM, HEADER_LINE_Y,
+  FIRST_LINE_Y_MM, LINE_SPACING_MM, LEFT_MARGIN_MM, RIGHT_MARGIN_MM,
+  TEXT_WIDTH_MM, BODY_FONT_SIZE_PT, FOOTER_H_MM,
+} from "../utils/pageSpec";
 
 const _imgCache = {};
 function loadImg(src) {
@@ -43,99 +46,115 @@ async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
 
   const rawText = typeof page === "string" ? page : (page?.data ?? "");
   const tplKey  = page?.meta?.template || "plain";
-  const tpl     = TEMPLATES[tplKey] || TEMPLATES.plain;
-  const layout  = tpl.layout;
+  const fontKey = page?.meta?.font     || "default";
+  const tpl     = TEMPLATES[tplKey]  || TEMPLATES.plain;
+  const fontDef = HANDWRITING_FONTS[fontKey] || HANDWRITING_FONTS.default;
   const decor   = tpl.uiDecor;
 
-  // ── 1. Main background ────────────────────────────────────────────────────
-  const bgStyle = decor?.containerBg || tpl.editorStyle?.background || "#fff";
-  const solidMatch = bgStyle.match(/#[0-9a-f]{3,6}/i);
-  ctx.fillStyle = (bgStyle.startsWith("#") || bgStyle.startsWith("rgb")) ? bgStyle : (solidMatch ? solidMatch[0] : "#fff");
+  // Derived canvas constants (shared with editor + pdf via pageSpec)
+  const { headerH, footerH, firstLineY, lineSpacing, leftMargin, rightMargin, textWidth, titleY, dateY, lineY } = CANVAS;
+
+  // ── 1. Main background ──────────────────────────────────────────────────
+  const bgStyle   = decor?.containerBg || "#fff";
+  const bgMatch   = bgStyle.match(/#[0-9a-f]{3,6}/i);
+  ctx.fillStyle   = (bgStyle.startsWith("#") || bgStyle.startsWith("rgb")) ? bgStyle : (bgMatch ? bgMatch[0] : "#fff");
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-  // ── 2. Header SVG band ────────────────────────────────────────────────────
-  const hH = (decor?.headerSvgH || 0) + 56; // header band total height (controls + svg)
+  // ── 2. Header background band ───────────────────────────────────────────
+  if (decor?.headerBg) {
+    const hbgMatch = decor.headerBg.match(/#[0-9a-f]{3,6}/i);
+    ctx.fillStyle  = hbgMatch ? hbgMatch[0] : "#eee";
+    ctx.fillRect(0, 0, CANVAS_W, headerH);
+  }
+
+  // ── 3. Footer background band ───────────────────────────────────────────
+  if (decor?.footerBg) {
+    const fbgMatch = decor.footerBg.match(/#[0-9a-f]{3,6}/i);
+    ctx.fillStyle  = fbgMatch ? fbgMatch[0] : "#eee";
+    ctx.fillRect(0, CANVAS_H - footerH, CANVAS_W, footerH);
+  }
+
+  // ── 4. Header SVG decoration ────────────────────────────────────────────
   if (decor?.headerSvg && decor.headerSvgH) {
-    // Header background
-    const hbg = decor.headerBg || tpl.pdfTitleColor;
-    const hMatch = hbg.match(/#[0-9a-f]{3,6}/i);
-    ctx.fillStyle = hMatch ? hMatch[0] : "#eee";
-    ctx.fillRect(0, 0, CANVAS_W, hH);
-    // Header SVG decoration
-    await drawSvgOnCanvas(ctx, decor.headerSvg, CANVAS_W, hH - decor.headerSvgH, decor.headerSvgH);
-    // Header border line
-    ctx.strokeStyle = tpl.pdfTitleColor; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(0, hH); ctx.lineTo(CANVAS_W, hH); ctx.stroke();
+    await drawSvgOnCanvas(ctx, decor.headerSvg, CANVAS_W, headerH - Math.round(decor.headerSvgH * MM_TO_PX), Math.round(decor.headerSvgH * MM_TO_PX));
   }
 
-  // ── 3. Footer SVG band ────────────────────────────────────────────────────
-  const fH = (decor?.footerSvgH || 0) + 40;
+  // ── 5. Footer SVG decoration ────────────────────────────────────────────
   if (decor?.footerSvg && decor.footerSvgH) {
-    const fbg = decor.footerBg || tpl.pdfTitleColor;
-    const fMatch = fbg.match(/#[0-9a-f]{3,6}/i);
-    ctx.fillStyle = fMatch ? fMatch[0] : "#eee";
-    ctx.fillRect(0, CANVAS_H - fH, CANVAS_W, fH);
-    await drawSvgOnCanvas(ctx, decor.footerSvg, CANVAS_W, CANVAS_H - fH, decor.footerSvgH);
-    ctx.strokeStyle = tpl.pdfTitleColor; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(0, CANVAS_H - fH); ctx.lineTo(CANVAS_W, CANVAS_H - fH); ctx.stroke();
+    await drawSvgOnCanvas(ctx, decor.footerSvg, CANVAS_W, CANVAS_H - footerH, Math.round(decor.footerSvgH * MM_TO_PX));
   }
 
-  // ── 4. Corner SVGs ────────────────────────────────────────────────────────
+  // ── 6. Header / footer border lines ────────────────────────────────────
+  ctx.strokeStyle = tpl.pdfTitleColor || "#555";
+  ctx.lineWidth   = 2;
+  ctx.beginPath(); ctx.moveTo(0, headerH); ctx.lineTo(CANVAS_W, headerH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, CANVAS_H - footerH); ctx.lineTo(CANVAS_W, CANVAS_H - footerH); ctx.stroke();
+
+  // ── 7. Corner SVGs ──────────────────────────────────────────────────────
   if (decor?.cornerSvg && decor.cornerSize) {
-    const sz = decor.cornerSize * 1.6; // scale up for canvas resolution
+    const sz = Math.round(decor.cornerSize * MM_TO_PX);
     const corners = [
-      { x:0,          y:hH,            rot:0   },
-      { x:CANVAS_W-sz,y:hH,            rot:90  },
-      { x:0,          y:CANVAS_H-fH-sz,rot:270 },
-      { x:CANVAS_W-sz,y:CANVAS_H-fH-sz,rot:180 },
+      { x: 0,           y: headerH,                    rot: 0   },
+      { x: CANVAS_W-sz, y: headerH,                    rot: 90  },
+      { x: 0,           y: CANVAS_H - footerH - sz,    rot: 270 },
+      { x: CANVAS_W-sz, y: CANVAS_H - footerH - sz,    rot: 180 },
     ];
     for (const c of corners) {
       ctx.save();
       ctx.translate(c.x + sz/2, c.y + sz/2);
       ctx.rotate((c.rot * Math.PI) / 180);
       ctx.translate(-sz/2, -sz/2);
-      await drawSvgOnCanvas(ctx, decor.cornerSvg.bind(null, sz), sz, 0, sz);
+      const svgStr = decor.cornerSvg(sz);
+      await drawSvgOnCanvas(ctx, () => svgStr, sz, 0, sz);
       ctx.restore();
     }
   }
 
-  // ── 5. Ruled lines ────────────────────────────────────────────────────────
-  const lm  = layout.leftMargin * MM_TO_PX;
-  const rm  = layout.rightMargin * MM_TO_PX;
-  const ls  = layout.lineSpacing * MM_TO_PX;
-  const ly0 = hH + 28; // first line y — below header
-  ctx.strokeStyle = (decor?.lineColor || tpl.pdfTitleColor) + "66";
-  ctx.lineWidth   = 0.8;
-  for (let y = ly0; y < CANVAS_H - fH - 10; y += ls) {
-    ctx.beginPath(); ctx.moveTo(lm, y); ctx.lineTo(CANVAS_W - rm, y); ctx.stroke();
+  // ── 8. Ruled lines ──────────────────────────────────────────────────────
+  ctx.strokeStyle = (decor?.lineColor || tpl.pdfTitleColor || "#ccc") + "88";
+  ctx.lineWidth   = 0.7;
+  for (let y = firstLineY; y < CANVAS_H - footerH - 8; y += lineSpacing) {
+    ctx.beginPath(); ctx.moveTo(leftMargin, y); ctx.lineTo(CANVAS_W - rightMargin, y); ctx.stroke();
   }
 
-  // ── 6. Title ──────────────────────────────────────────────────────────────
-  ctx.fillStyle = decor?.textareaColor || tpl.pdfTextColor || "#202124";
-  ctx.font      = "bold 20px -apple-system, sans-serif";
-  ctx.fillText(selectedFile?.name || "Diary Entry", lm, hH - 36);
+  // ── 9. Title ────────────────────────────────────────────────────────────
+  const titleColor = decor?.textareaColor || tpl.pdfTitleColor || "#202124";
+  ctx.fillStyle  = titleColor;
+  ctx.font       = `bold ${Math.round(TITLE_Y_MM * MM_TO_PX * 0.55)}px -apple-system, sans-serif`;
+  ctx.fillText(selectedFile?.name || "Diary Entry", leftMargin, titleY);
 
-  // ── 7. Date + page number ─────────────────────────────────────────────────
-  ctx.font        = "13px -apple-system, sans-serif";
-  ctx.globalAlpha = 0.65;
-  ctx.fillText(new Date(selectedFile?.createdAt).toDateString(), lm, hH - 18);
+  // ── 10. Date + page number ──────────────────────────────────────────────
+  ctx.font        = `${Math.round(dateY * MM_TO_PX * 0.32)}px -apple-system, sans-serif`;
+  ctx.globalAlpha = 0.6;
+  ctx.fillText(new Date(selectedFile?.createdAt).toDateString(), leftMargin, dateY);
   ctx.textAlign   = "right";
-  ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, CANVAS_W - rm, hH - 18);
+  ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, CANVAS_W - rightMargin, dateY);
   ctx.textAlign   = "left";
   ctx.globalAlpha = 1;
 
-  // ── 8. Body text ──────────────────────────────────────────────────────────
+  // Separator
+  ctx.strokeStyle = titleColor; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(leftMargin, lineY); ctx.lineTo(CANVAS_W - rightMargin, lineY); ctx.stroke();
+
+  // ── 11. Body text — same font family as editor, word-wrapped ───────────
+  // Use the Google Font family name if available, fall back to sans-serif.
+  // This matches what the editor shows (Google Font is loaded in the browser).
+  const bodyFontFamily = fontDef.editorFamily !== "inherit"
+    ? fontDef.editorFamily + ", sans-serif"
+    : "-apple-system, sans-serif";
+
+  // Font size: convert BODY_FONT_SIZE_PT to px (1pt = 1.333px at 96dpi)
+  const bodyFontPx = Math.round(BODY_FONT_SIZE_PT * 1.333);
+  const fontSpec   = `${bodyFontPx}px ${bodyFontFamily}`;
+  ctx.font      = fontSpec;
   ctx.fillStyle = decor?.textareaColor || tpl.pdfTextColor || "#202124";
-  ctx.font      = "15px -apple-system, sans-serif";
-  const charW  = 8;
-  const maxChr = Math.floor((CANVAS_W - lm - rm) / charW);
-  const lines  = rawText.split("\n").flatMap((ln) => {
-    if (!ln) return [""];
-    const chunks = [];
-    for (let i = 0; i < ln.length; i += maxChr) chunks.push(ln.slice(i, i + maxChr));
-    return chunks;
+
+  // Word-wrap using canvas measureText — exactly matches PDF word boundaries
+  const wrappedLines = wrapWords(ctx, rawText, textWidth, fontSpec);
+
+  wrappedLines.slice(0, MAX_LINES_PER_PAGE).forEach((line, i) => {
+    ctx.fillText(line, leftMargin, firstLineY + i * lineSpacing);
   });
-  lines.forEach((line, i) => { ctx.fillText(line, lm, ly0 + i * ls); });
 
   return canvas;
 }

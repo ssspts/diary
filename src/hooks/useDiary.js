@@ -43,7 +43,8 @@ export function useDiary() {
   const [showMenu, setShowMenu]             = useState(false);
   const [showProfile, setShowProfile]       = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
-  const [diaryTitle, setDiaryTitle] = useState("Diary");
+  // Read from localStorage for instant load; Firestore will overwrite if different
+  const [diaryTitle, setDiaryTitle] = useState(() => localStorage.getItem("diaryTitle") || "Diary");
 
   // ── Refs ─────────────────────────────────────────────────────────────────
   const menuRef       = useRef(null);
@@ -52,9 +53,15 @@ export function useDiary() {
 
   // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
-      if (u) { fetchFiles(u.uid); fetchSettings(u.uid); }
+      if (u) {
+        fetchFiles(u.uid);
+        // Load diary title: localStorage first (instant), then Firestore (authoritative)
+        const local = localStorage.getItem("diaryTitle");
+        if (local) setDiaryTitle(local);
+        fetchSettings(u.uid);
+      }
     });
     return () => unsub();
   }, []);
@@ -113,14 +120,20 @@ export function useDiary() {
   const fetchSettings = async (uid) => {
     try {
       const snap = await getDoc(doc(db, "users", uid, "settings", "preferences"));
-      if (snap.exists() && snap.data().diaryTitle)
-        setDiaryTitle(snap.data().diaryTitle);
+      if (snap.exists() && snap.data().diaryTitle) {
+        const title = snap.data().diaryTitle;
+        setDiaryTitle(title);
+        // Keep localStorage in sync with Firestore
+        localStorage.setItem("diaryTitle", title);
+      }
     } catch {}
   };
 
   const updateDiaryTitle = async (title) => {
     const trimmed = (title || "").trim() || "Diary";
     setDiaryTitle(trimmed);
+    // Persist to localStorage immediately (survives page refresh even before Firestore responds)
+    localStorage.setItem("diaryTitle", trimmed);
     if (user) {
       await setDoc(
         doc(db, "users", user.uid, "settings", "preferences"),

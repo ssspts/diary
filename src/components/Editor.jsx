@@ -4,13 +4,25 @@ import { shared } from "../styles/tokens";
 import { TEMPLATES, HANDWRITING_FONTS, FONT_KEYS, ensureMeta } from "../utils/templates";
 import PdfPreview from "./PdfPreview";
 
-const LINES_PER_PAGE = 25;
-const CHARS_PER_LINE = 72;
+import { MAX_LINES_PER_PAGE, CANVAS, wrapWords } from "../utils/pageSpec";
 
-function countLines(text) {
+// Count lines using the same word-wrap logic as the PDF and preview.
+// We use a temporary offscreen canvas to measure text width accurately.
+let _measureCtx = null;
+function getMeasureCtx() {
+  if (!_measureCtx) {
+    const c = document.createElement("canvas");
+    _measureCtx = c.getContext("2d");
+  }
+  return _measureCtx;
+}
+
+function countWrappedLines(text, fontFamily) {
   if (!text) return 0;
-  return text.split("\n").reduce((sum, line) =>
-    sum + Math.max(1, Math.ceil((line.length || 1) / CHARS_PER_LINE)), 0);
+  const ctx   = getMeasureCtx();
+  const font  = `${CANVAS.lineSpacing * 0.7}px ${fontFamily || "sans-serif"}`;
+  const lines = wrapWords(ctx, text, CANVAS.textWidth, font);
+  return lines.length;
 }
 
 // Render a uiDecor SVG string (which is a function of width) into a div overlay.
@@ -91,8 +103,8 @@ export default function Editor({
   // ── Line overflow handler ─────────────────────────────────────────────────
   const handleTextChange = (e) => {
     const newText   = e.target.value;
-    const lineCount = countLines(newText);
-    if (lineCount <= LINES_PER_PAGE) {
+    const lineCount = countWrappedLines(newText, currentFont.editorFamily);
+    if (lineCount <= MAX_LINES_PER_PAGE) {
       const updated = [...pages];
       updated[currentPage] = { ...ensureMeta(updated[currentPage]), data: newText };
       setPages(updated);
@@ -100,7 +112,7 @@ export default function Editor({
       return;
     }
     const rawLines = newText.split("\n");
-    let budget = LINES_PER_PAGE, splitIndex = rawLines.length;
+    let budget = MAX_LINES_PER_PAGE, splitIndex = rawLines.length;
     for (let i = 0; i < rawLines.length; i++) {
       const wc = Math.max(1, Math.ceil((rawLines[i].length || 1) / CHARS_PER_LINE));
       if (budget - wc < 0) { splitIndex = i; break; }
@@ -143,7 +155,7 @@ export default function Editor({
     setIsDirty(true);
   };
 
-  const linesLeft = LINES_PER_PAGE - countLines(pages[currentPage]?.data ?? "");
+  const linesLeft = MAX_LINES_PER_PAGE - countWrappedLines(pages[currentPage]?.data ?? "", currentFont.editorFamily);
   const nearLimit = linesLeft <= 3;
 
   // Ruled-line background for textarea
@@ -284,7 +296,7 @@ export default function Editor({
               outline: "none",
               resize: "none",
               fontSize: "16px",
-              lineHeight: `${decor.lineSpacingPx}px`,
+              lineHeight: `${CANVAS.lineSpacing}px`,
               fontFamily: currentFont.editorFamily,
               color: decor.textareaColor,
               background: textareaBackground,

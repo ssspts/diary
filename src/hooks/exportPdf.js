@@ -1,12 +1,12 @@
 // src/utils/exportPdf.js
 import jsPDF from "jspdf";
-import { TEMPLATES, HANDWRITING_FONTS, loadFontIntoDoc } from "./templates";
+import { TEMPLATES, HANDWRITING_FONTS, loadFontIntoDoc } from "../utils/templates.js";
 import {
   HEADER_H_MM, TITLE_Y_MM, DATE_Y_MM, HEADER_LINE_Y,
   FIRST_LINE_Y_MM, LINE_SPACING_MM, LEFT_MARGIN_MM, RIGHT_MARGIN_MM,
   TEXT_WIDTH_MM, MAX_LINES_PER_PAGE, BODY_FONT_SIZE_PT,
   FOOTER_H_MM,
-} from "./pageSpec";
+} from "../utils/pageSpec.js";
 
 /**
  * Export diary pages as a themed PDF.

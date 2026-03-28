@@ -1,7 +1,7 @@
 // src/App.jsx
 import { useEffect } from "react";
 import { useDiary }       from "./hooks/useDiary";
-import { exportPdf }      from "./utils/exportPdf";
+import { exportPdf }      from "./hooks/exportPdf.js";
 import { ensureMeta, HANDWRITING_FONTS, FONT_KEYS } from "./utils/templates";
 import { layout }         from "./styles/tokens";
 
