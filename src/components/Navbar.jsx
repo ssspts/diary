@@ -1,23 +1,15 @@
 // src/components/Navbar.jsx
+import { useState } from "react";
 import { navbar as s } from "../styles/tokens";
-import HoverRow from "./HoverRow.jsx";
+import HoverRow from "./HoverRow";
 
 /**
  * Props:
- *   user            – Firebase user object
- *   menuRef         – ref for outside-click detection
- *   searchRef       – ref for outside-click detection
- *   showMenu        – boolean
- *   setShowMenu     – setter
- *   showProfile     – boolean (unused here, triggers parent)
- *   setShowProfile  – setter
- *   searchQuery     – string
- *   setSearchQuery  – setter
- *   searchFocused   – boolean
- *   setSearchFocused– setter
- *   searchResults   – array of file objects
- *   onSearchSelect  – (file) => void  called when user clicks a result
- *   onLogout        – () => void
+ *   user, menuRef, searchRef, showMenu, setShowMenu, setShowProfile,
+ *   searchQuery, setSearchQuery, searchFocused, setSearchFocused,
+ *   searchResults, onSearchSelect, onLogout,
+ *   diaryTitle        – string, the customizable app title
+ *   onDiaryTitleSave  – (newTitle: string) => void
  */
 export default function Navbar({
   user, menuRef, searchRef,
@@ -26,12 +18,44 @@ export default function Navbar({
   searchFocused, setSearchFocused,
   searchResults, onSearchSelect,
   onLogout,
+  diaryTitle, onDiaryTitleSave,
 }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [tempTitle, setTempTitle]       = useState("");
   const showDrop = searchFocused && searchQuery.trim().length > 0;
+
+  const startEdit = () => { setTempTitle(diaryTitle); setEditingTitle(true); };
+  const commitEdit = () => {
+    onDiaryTitleSave(tempTitle);
+    setEditingTitle(false);
+  };
 
   return (
     <nav style={s.bar}>
-      <span style={s.brand}>📖 Diary</span>
+
+      {/* ── Customizable diary title ── */}
+      {editingTitle ? (
+        <input
+          autoFocus
+          value={tempTitle}
+          onChange={(e) => setTempTitle(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter")  commitEdit();
+            if (e.key === "Escape") setEditingTitle(false);
+          }}
+          onBlur={commitEdit}
+          style={st.titleInput}
+        />
+      ) : (
+        <span
+          style={s.brand}
+          title="Click to rename your diary"
+          onClick={startEdit}
+        >
+          📖 {diaryTitle}
+          <span style={st.editHint}>✎</span>
+        </span>
+      )}
 
       {/* ── Search ── */}
       <div ref={searchRef} style={s.center}>
@@ -104,3 +128,18 @@ export default function Navbar({
     </nav>
   );
 }
+
+const st = {
+  titleInput: {
+    fontSize: 15, fontWeight: 700, border: "none",
+    borderBottom: "2px solid #1a73e8", outline: "none",
+    padding: "2px 4px", color: "#202124", background: "transparent",
+    minWidth: 120, maxWidth: 220,
+  },
+  editHint: {
+    fontSize: 11, marginLeft: 5, opacity: 0,
+    transition: "opacity 0.15s",
+    // We show it on parent hover via CSS injection below — approximated with always-dim
+    color: "#9aa0a6",
+  },
+};

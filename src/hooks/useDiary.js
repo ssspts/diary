@@ -6,9 +6,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState, useEffect, useRef, useCallback } from "react";
 import { signOut, onAuthStateChanged, signInWithPopup } from "firebase/auth";
-import { collection, addDoc, deleteDoc, doc, updateDoc, getDocs } from "firebase/firestore";
-import { auth, db, provider } from "../firebase";
-import { ensureMeta } from "../utils/templates";
+import { collection, addDoc, deleteDoc, doc, updateDoc, getDocs, getDoc, setDoc } from "firebase/firestore";
+import { auth, db, provider } from "../firebase.js";
+import { ensureMeta } from "../utils/templates.js";
 
 export function useDiary() {
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -43,6 +43,7 @@ export function useDiary() {
   const [showMenu, setShowMenu]             = useState(false);
   const [showProfile, setShowProfile]       = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [diaryTitle, setDiaryTitle] = useState("Diary");
 
   // ── Refs ─────────────────────────────────────────────────────────────────
   const menuRef       = useRef(null);
@@ -53,7 +54,7 @@ export function useDiary() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
-      if (u) fetchFiles(u.uid);
+      if (u) { fetchFiles(u.uid); fetchSettings(u.uid); }
     });
     return () => unsub();
   }, []);
@@ -107,6 +108,26 @@ export function useDiary() {
   const fetchFiles = async (uid) => {
     const snap = await getDocs(collection(db, "users", uid, "files"));
     setFiles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  };
+
+  const fetchSettings = async (uid) => {
+    try {
+      const snap = await getDoc(doc(db, "users", uid, "settings", "preferences"));
+      if (snap.exists() && snap.data().diaryTitle)
+        setDiaryTitle(snap.data().diaryTitle);
+    } catch {}
+  };
+
+  const updateDiaryTitle = async (title) => {
+    const trimmed = (title || "").trim() || "Diary";
+    setDiaryTitle(trimmed);
+    if (user) {
+      await setDoc(
+        doc(db, "users", user.uid, "settings", "preferences"),
+        { diaryTitle: trimmed },
+        { merge: true }
+      );
+    }
   };
 
   const openFile = useCallback((file) => {
@@ -235,5 +256,7 @@ export function useDiary() {
     menuRef, searchRef, titleInputRef,
     // date sidebar
     groupDatesByMonth,
+    // diary title
+    diaryTitle, updateDiaryTitle,
   };
 }

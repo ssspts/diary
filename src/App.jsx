@@ -92,6 +92,8 @@ export default function App() {
           diary.openFile(f);
         }}
         onLogout={diary.logout}
+        diaryTitle={diary.diaryTitle}
+        onDiaryTitleSave={diary.updateDiaryTitle}
       />
 
       <div style={layout.body}>
