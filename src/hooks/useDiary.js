@@ -12,7 +12,7 @@
 //               + a date-picker to jump to any date
 //   Editor    → pages for the selected diary + selected date
 // ─────────────────────────────────────────────────────────────────────────────
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { signOut, onAuthStateChanged, signInWithPopup } from "firebase/auth";
 import {
   collection, addDoc, deleteDoc, doc,
@@ -60,8 +60,7 @@ export function useDiary() {
   const [currentPage, setCurrentPage] = useState(0);
   const [isDirty, setIsDirty]         = useState(false);
   const [saving, setSaving]           = useState(false);
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [tempTitle, setTempTitle]       = useState("");
+  const [entryTitle, setEntryTitle]     = useState("");  // per-date title, editable in editor
 
   // ── Search ────────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery]     = useState("");
@@ -154,7 +153,9 @@ export function useDiary() {
     }
   };
 
-  const addDiary = async (name = "New Diary") => {
+  const addDiary = async (rawName) => {
+    // Guard: if called without an argument or with a React event, use default string
+    const name = typeof rawName === "string" && rawName.trim() ? rawName.trim() : "New Diary";
     setLoading(true);
     try {
       const createdAt = new Date().toISOString();
@@ -164,8 +165,8 @@ export function useDiary() {
       );
       const nd = { id: docRef.id, name, emoji: "📔", createdAt };
       setDiaries((prev) => [...prev, nd]);
-      // Auto-open the new diary
-      openDiary(nd);
+      // Auto-open the new diary — pass uid explicitly (user state may be stale in closure)
+      await openDiary(nd, user.uid);
       // Trigger title edit
       setTimeout(() => {
         setEditingDiaryId(nd.id);
@@ -207,56 +208,70 @@ export function useDiary() {
     if (selectedDiary?.id === id) setSelectedDiary((p) => ({ ...p, name: trimmed }));
   };
 
-  const openDiary = useCallback(async (diary) => {
+  const openDiary = async (diary, uid) => {
+    // uid can be passed explicitly (e.g. from addDiary before user state updates)
+    // or fall back to the current user state
+    const resolvedUid = uid || user?.uid;
+    if (!resolvedUid) { alert("Not signed in"); return; }
     if (isDirty && !window.confirm("You have unsaved changes. Discard and open this diary?")) return;
     setSelectedDiary(diary);
     setPages([]);
+    setEntryTitle("");
     setIsDirty(false);
     setCurrentPage(0);
     setSelectedDate(new Date());
     setEntriesMeta({});
-    // Load the metadata of all entries (just date keys + content summary for search)
-    const snap = await getDocs(
-      collection(db, "users", diary.id === diary.id ? user?.uid || "" : "", "diaries", diary.id, "entries")
-    );
-    const meta = {};
-    snap.docs.forEach((d) => {
-      const data = d.data();
-      const bodyText = Array.isArray(data.content)
-        ? data.content.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ")
-        : "";
-      meta[d.id] = { date: data.date, contentText: bodyText };
-    });
-    setEntriesMeta(meta);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty, user]);
+    try {
+      const snap = await getDocs(
+        collection(db, "users", resolvedUid, "diaries", diary.id, "entries")
+      );
+      const meta = {};
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        const bodyText = Array.isArray(data.content)
+          ? data.content.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ")
+          : "";
+        meta[d.id] = { date: data.date, contentText: bodyText };
+      });
+      setEntriesMeta(meta);
+    } catch (e) {
+      console.warn("Failed to load entries metadata:", e.message);
+    }
+  };
 
   // ────────────────────────────────────────────────────────────────────────────
   // Firestore: entries (date-keyed within a diary)
   // ────────────────────────────────────────────────────────────────────────────
-  const loadEntry = useCallback(async (diary, date) => {
-    if (!diary) return;
+  const loadEntry = async (diary, date) => {
+    if (!diary || !user?.uid) return;
     const key  = toDateKey(date);
     const ref  = doc(db, "users", user.uid, "diaries", diary.id, "entries", key);
-    const snap = await getDoc(ref);
-    if (snap.exists()) {
-      const content = (snap.data().content || []).map(ensureMeta);
-      setPages(content.length ? content : [ensureMeta("")]);
-    } else {
+    try {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        const data    = snap.data();
+        const content = (data.content || []).map(ensureMeta);
+        setPages(content.length ? content : [ensureMeta("")]);
+        setEntryTitle(data.entryTitle || "");
+      } else {
+        setPages([ensureMeta("")]);
+        setEntryTitle("");
+      }
+    } catch (e) {
+      console.warn("Failed to load entry:", e.message);
       setPages([ensureMeta("")]);
     }
     setCurrentPage(0);
     setIsDirty(false);
-  }, [user]);
+  };
 
-  const saveContent = useCallback(async () => {
-    if (!selectedDiary || !user) return;
+  const saveContent = async () => {
+    if (!selectedDiary || !user?.uid) return;
     try {
       setSaving(true);
       const key = toDateKey(selectedDate);
       const ref = doc(db, "users", user.uid, "diaries", selectedDiary.id, "entries", key);
-      await setDoc(ref, { date: key, content: pages }, { merge: true });
-      // Update entries meta
+      await setDoc(ref, { date: key, content: pages, entryTitle }, { merge: true });
       const bodyText = pages.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ");
       setEntriesMeta((prev) => ({ ...prev, [key]: { date: key, contentText: bodyText } }));
       setIsDirty(false);
@@ -265,25 +280,27 @@ export function useDiary() {
     } finally {
       setSaving(false);
     }
-  }, [selectedDiary, selectedDate, pages, user]);
+  };
 
   // ── Selecting a date (sidebar 2 click or date picker) ─────────────────────
-  const selectDate = useCallback(async (date, diary = selectedDiary) => {
+  const selectDate = async (date, diary) => {
+    const targetDiary = diary || selectedDiary;
     if (isDirty && !window.confirm("You have unsaved changes. Discard?")) return;
     const newDate = date instanceof Date ? date : fromDateKey(date);
     setSelectedDate(newDate);
     setPages([]);
+    setEntryTitle("");
     setIsDirty(false);
-    if (diary) await loadEntry(diary, newDate);
-  }, [isDirty, selectedDiary, loadEntry]);
+    if (targetDiary) await loadEntry(targetDiary, newDate);
+  };
 
   // ── Open diary then jump to date (used from search results) ───────────────
-  const openDiaryAndDate = useCallback(async (diary, dateKey) => {
+  const openDiaryAndDate = async (diary, dateKey) => {
     await openDiary(diary);
     const date = fromDateKey(dateKey);
     setSelectedDate(date);
     await loadEntry(diary, date);
-  }, [openDiary, loadEntry]);
+  };
 
   // ── Date helpers ──────────────────────────────────────────────────────────
   const isSameDay = (d1, d2) => new Date(d1).toDateString() === new Date(d2).toDateString();
@@ -350,7 +367,7 @@ export function useDiary() {
     // editor
     pages, setPages, currentPage, setCurrentPage,
     isDirty, setIsDirty, saving, saveContent,
-    editingTitle, setEditingTitle, tempTitle, setTempTitle,
+    entryTitle, setEntryTitle,
     loading,
     // search
     searchQuery, setSearchQuery, searchResults, searchFocused, setSearchFocused,

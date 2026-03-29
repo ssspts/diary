@@ -119,6 +119,8 @@ export default function App() {
           isDirty={diary.isDirty}
           setIsDirty={diary.setIsDirty}
           saving={diary.saving}
+          entryTitle={diary.entryTitle}
+          setEntryTitle={diary.setEntryTitle}
           onSave={diary.saveContent}
           onOpenTemplatePicker={() => diary.setShowTemplatePicker(true)}
         />

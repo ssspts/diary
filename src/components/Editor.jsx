@@ -70,10 +70,11 @@ function Corner({ svgFn, size, position }) {
 }
 
 export default function Editor({
-  selectedDiary,      // the open diary object { id, name, emoji }
-  selectedDate,       // Date object — the currently viewed date
+  selectedDiary,    // the open diary object { id, name, emoji }
+  selectedDate,     // Date object — the currently viewed date
   pages, setPages, currentPage, setCurrentPage,
   isDirty, setIsDirty, saving,
+  entryTitle, setEntryTitle,   // per-date editable title
   onSave, onOpenTemplatePicker,
 }) {
   const textareaRef  = useRef(null);
@@ -202,30 +203,47 @@ export default function Editor({
             display: "flex", alignItems: "flex-start", justifyContent: "space-between",
             padding: "12px 20px 10px", gap: 12,
           }}>
-            {/* Left: title + date */}
-            <div style={{ display:"flex", flexDirection:"column", gap:2, minWidth:0 }}>
-              {editingTitle ? (
-                <input
-                  ref={titleInputRef}
-                  value={tempTitle}
-                  onChange={(e) => setTempTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter")  { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }
-                    if (e.key === "Escape") { setEditingTitle(false); }
-                  }}
-                  onBlur={() => { onRenameFile(selectedFile.id, tempTitle); setEditingTitle(false); }}
-                  style={{ fontSize:15, fontWeight:600, border:"none", borderBottom:"2px solid " + decor.btnBg, outline:"none", padding:"1px 0", color: decor.textareaColor, background:"transparent", width:260 }}
-                />
-              ) : (
-                <div style={{ margin:0, fontSize:16, fontWeight:600, color: decor.textareaColor, display:"flex", alignItems:"center", gap:7 }}>
-                  <span>{selectedDiary.emoji || "📔"}</span>
-                  <span>{selectedDiary.name}</span>
-                  {isDirty && <span style={{ width:7, height:7, borderRadius:"50%", background:"#fbbc04", display:"inline-block" }} title="Unsaved" />}
-                </div>
-              )}
-              <span style={{ fontSize:11, color: decor.textareaColor, opacity:0.6 }}>
+            {/* Left: diary name (read-only) → date → editable entry title */}
+            <div style={{ display:"flex", flexDirection:"column", gap:4, minWidth:0 }}>
+
+              {/* Row 1: Diary name — read-only, same as sidebar name */}
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <span style={{ fontSize:15 }}>{selectedDiary.emoji || "📔"}</span>
+                <span style={{ fontSize:14, fontWeight:700, color: decor.textareaColor, opacity:0.85 }}>
+                  {selectedDiary.name || "Diary"}
+                </span>
+                {isDirty && (
+                  <span style={{ width:6, height:6, borderRadius:"50%", background:"#fbbc04", display:"inline-block", flexShrink:0 }} title="Unsaved changes" />
+                )}
+              </div>
+
+              {/* Row 2: Date — read-only */}
+              <span style={{ fontSize:11, color: decor.textareaColor, opacity:0.55, letterSpacing:"0.02em" }}>
                 {selectedDate.toLocaleDateString("default", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}
               </span>
+
+              {/* Row 3: Entry title — editable per date */}
+              <input
+                type="text"
+                value={entryTitle}
+                onChange={(e) => { setEntryTitle(e.target.value); setIsDirty(true); }}
+                placeholder="Add a title for this entry…"
+                style={{
+                  fontSize: 16,
+                  fontWeight: 600,
+                  color: decor.textareaColor,
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: `1.5px solid ${decor.textareaColor}33`,
+                  outline: "none",
+                  padding: "2px 0",
+                  width: 260,
+                  fontFamily: "inherit",
+                  transition: "border-color 0.15s",
+                }}
+                onFocus={(e) => e.target.style.borderBottomColor = decor.btnBg}
+                onBlur={(e) => e.target.style.borderBottomColor = `${decor.textareaColor}33`}
+              />
             </div>
 
             {/* Right: controls */}
@@ -368,7 +386,8 @@ export default function Editor({
       {showPreview && (
         <PdfPreview
           selectedFile={{
-            name: selectedDiary?.name || "Diary Entry",
+            name: entryTitle || selectedDiary?.name || "Diary Entry",
+            diaryName: selectedDiary?.name || "Diary",
             createdAt: selectedDate?.toISOString() || new Date().toISOString(),
           }}
           pages={pages}
