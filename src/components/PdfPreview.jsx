@@ -2,7 +2,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import jsPDF from "jspdf";
 import { TEMPLATES, HANDWRITING_FONTS, loadFontIntoDoc } from "../utils/templates";
-import { STICKER_CATEGORIES, STICKER_MAP } from "../utils/stickers";
 import ShareDialog from "./ShareDialog";
 import {
   CANVAS, CANVAS_W, CANVAS_H, MM_TO_PX,
@@ -38,6 +37,168 @@ async function drawSvgOnCanvas(ctx, svgFn, canvasW, y, h) {
   });
 }
 
+// ── Canvas renderer — pixel-accurate mirror of exportPdf.js ─────────────────
+// All sizes are derived from pageSpec mm constants converted to px via MM_TO_PX.
+// Font sizes match the PDF: 13pt title, 8pt date, 11pt body (1pt = 96/72 px).
+// Template decorations use the same pdfDrawBackground colour logic translated
+// to Canvas 2D — no uiDecor SVG bands (those are browser-only chrome).
+const PT_TO_PX = 96 / 72;  // 1 CSS px = 72/96 pt, so 1pt = 96/72 px ≈ 1.333
+
+function hexToRgb(hex) {
+  const h = hex.replace("#","");
+  if (h.length === 3) {
+    return [parseInt(h[0]+h[0],16), parseInt(h[1]+h[1],16), parseInt(h[2]+h[2],16)];
+  }
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+// Translate a CSS hex colour to canvas fillStyle, with optional alpha
+function cssHex(hex, alpha = 1) {
+  if (!hex || !hex.startsWith("#")) return `rgba(150,150,150,${alpha})`;
+  const [r,g,b] = hexToRgb(hex);
+  return alpha < 1 ? `rgba(${r},${g},${b},${alpha})` : `rgb(${r},${g},${b})`;
+}
+
+// Draw template background decorations onto the canvas.
+// This reproduces what pdfDrawBackground does, but using Canvas 2D calls.
+// We keep it simple: fill background, draw the main colour bands, draw ruled lines.
+// Detailed decorations (rose circles, sunflower petals, stars) are drawn via the
+// same pixel maths as the PDF — scaled by MM_TO_PX.
+function drawTemplateBackground(ctx, tpl, pw, ph) {
+  const decor  = tpl.uiDecor;
+  const layout = {
+    firstLineY:  FIRST_LINE_Y_MM * MM_TO_PX,
+    lineSpacing: LINE_SPACING_MM  * MM_TO_PX,
+    leftMargin:  LEFT_MARGIN_MM   * MM_TO_PX,
+    rightMargin: RIGHT_MARGIN_MM  * MM_TO_PX,
+  };
+
+  // 1. Page background
+  const bg = decor?.containerBg || "#fff";
+  const bgHex = bg.match(/#[0-9a-f]{3,6}/i)?.[0] || "#fff";
+  ctx.fillStyle = bgHex;
+  ctx.fillRect(0, 0, pw, ph);
+
+  // 2. Template-specific bands — mirror the PDF mm values scaled to px
+  const key = tpl.label?.toLowerCase() || "";
+
+  if (key.includes("rose")) {
+    // Top band
+    ctx.fillStyle = "rgb(255,182,203)"; ctx.fillRect(0, 0, pw, 8*MM_TO_PX);
+    ctx.fillStyle = "rgb(255,105,145)"; ctx.fillRect(0, 0, pw, 3*MM_TO_PX);
+    ctx.fillStyle = "rgb(255,182,203)"; ctx.fillRect(0, ph-8*MM_TO_PX, pw, 8*MM_TO_PX);
+    ctx.fillStyle = "rgb(255,105,145)"; ctx.fillRect(0, ph-3*MM_TO_PX, pw, 3*MM_TO_PX);
+    // Roses at corners (simplified circles)
+    const rose = (x,y) => {
+      const r = 5*MM_TO_PX;
+      ctx.fillStyle="rgb(255,105,145)"; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(255,182,203)"; ctx.beginPath(); ctx.arc(x-4*MM_TO_PX,y+2*MM_TO_PX,3*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(255,182,203)"; ctx.beginPath(); ctx.arc(x+4*MM_TO_PX,y+2*MM_TO_PX,3*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(255,182,203)"; ctx.beginPath(); ctx.arc(x,y-4*MM_TO_PX,3*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(220,80,120)";  ctx.beginPath(); ctx.arc(x,y,2*MM_TO_PX,0,Math.PI*2); ctx.fill();
+    };
+    rose(14*MM_TO_PX,14*MM_TO_PX); rose(pw-14*MM_TO_PX,14*MM_TO_PX);
+    rose(14*MM_TO_PX,ph-14*MM_TO_PX); rose(pw-14*MM_TO_PX,ph-14*MM_TO_PX);
+
+  } else if (key.includes("sunflower")) {
+    ctx.fillStyle="rgb(255,214,0)";  ctx.fillRect(0,0,pw,6*MM_TO_PX);
+    ctx.fillStyle="rgb(255,165,0)";  ctx.fillRect(0,0,pw,2.5*MM_TO_PX);
+    ctx.fillStyle="rgb(255,214,0)";  ctx.fillRect(0,ph-6*MM_TO_PX,pw,6*MM_TO_PX);
+    ctx.fillStyle="rgb(255,165,0)";  ctx.fillRect(0,ph-2.5*MM_TO_PX,pw,2.5*MM_TO_PX);
+    ctx.fillStyle="rgb(255,236,153)";ctx.fillRect(0,0,14*MM_TO_PX,ph);
+    ctx.strokeStyle="rgb(255,180,0)"; ctx.lineWidth=0.5*MM_TO_PX;
+    ctx.beginPath(); ctx.moveTo(14*MM_TO_PX,0); ctx.lineTo(14*MM_TO_PX,ph); ctx.stroke();
+    // Sunflower corners (simplified)
+    const sun = (cx,cy,r) => {
+      ctx.fillStyle="rgb(255,165,0)";
+      for (let a=0;a<360;a+=45) {
+        const rad=a*Math.PI/180;
+        ctx.beginPath(); ctx.arc(cx+Math.cos(rad)*r*1.6,cy+Math.sin(rad)*r*1.6,r*0.55,0,Math.PI*2); ctx.fill();
+      }
+      ctx.fillStyle="rgb(139,90,0)";  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(101,60,0)";  ctx.beginPath(); ctx.arc(cx,cy,r*0.55,0,Math.PI*2); ctx.fill();
+    };
+    const r=4*MM_TO_PX;
+    sun(7*MM_TO_PX,14*MM_TO_PX,r); sun(pw-12*MM_TO_PX,14*MM_TO_PX,r);
+    sun(7*MM_TO_PX,ph-14*MM_TO_PX,r); sun(pw-12*MM_TO_PX,ph-14*MM_TO_PX,r);
+
+  } else if (key.includes("ocean")) {
+    ctx.fillStyle="rgb(3,169,244)";  ctx.fillRect(0,0,pw,10*MM_TO_PX);
+    ctx.fillStyle="rgb(0,188,212)";  ctx.fillRect(0,3*MM_TO_PX,pw,4*MM_TO_PX);
+    ctx.fillStyle="rgb(2,136,209)";  ctx.fillRect(0,0,pw,2*MM_TO_PX);
+    ctx.fillStyle="rgb(3,169,244)";  ctx.fillRect(0,ph-10*MM_TO_PX,pw,10*MM_TO_PX);
+    ctx.fillStyle="rgb(0,188,212)";  ctx.fillRect(0,ph-7*MM_TO_PX,pw,4*MM_TO_PX);
+    [[12,12],[pw/MM_TO_PX-12,12],[12,ph/MM_TO_PX-12],[pw/MM_TO_PX-12,ph/MM_TO_PX-12]].forEach(([x,y])=>{
+      const xp=x*MM_TO_PX, yp=y*MM_TO_PX;
+      ctx.fillStyle="rgb(179,229,252)"; ctx.beginPath(); ctx.arc(xp,yp,5*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(3,169,244)";   ctx.beginPath(); ctx.arc(xp,yp,3*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(179,229,252)"; ctx.beginPath(); ctx.arc(xp-MM_TO_PX,yp-MM_TO_PX,MM_TO_PX,0,Math.PI*2); ctx.fill();
+    });
+
+  } else if (key.includes("forest")) {
+    ctx.fillStyle="rgb(56,142,60)";  ctx.fillRect(0,0,pw,7*MM_TO_PX);
+    ctx.fillStyle="rgb(27,94,32)";   ctx.fillRect(0,0,pw,2.5*MM_TO_PX);
+    ctx.fillStyle="rgb(56,142,60)";  ctx.fillRect(0,ph-7*MM_TO_PX,pw,7*MM_TO_PX);
+    ctx.fillStyle="rgb(27,94,32)";   ctx.fillRect(0,ph-2.5*MM_TO_PX,pw,2.5*MM_TO_PX);
+    const leaf=(x,y)=>{
+      ctx.fillStyle="rgb(56,142,60)";   ctx.beginPath(); ctx.arc(x,y,4*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(27,94,32)";    ctx.beginPath(); ctx.arc(x+3*MM_TO_PX,y-3*MM_TO_PX,2.5*MM_TO_PX,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="rgb(129,199,132)"; ctx.beginPath(); ctx.arc(x-2*MM_TO_PX,y-2*MM_TO_PX,1.8*MM_TO_PX,0,Math.PI*2); ctx.fill();
+    };
+    leaf(14*MM_TO_PX,14*MM_TO_PX); leaf(pw-14*MM_TO_PX,14*MM_TO_PX);
+    leaf(14*MM_TO_PX,ph-14*MM_TO_PX); leaf(pw-14*MM_TO_PX,ph-14*MM_TO_PX);
+
+  } else if (key.includes("galaxy")) {
+    ctx.fillStyle="rgb(22,33,62)";   ctx.fillRect(0,0,pw,ph);
+    ctx.fillStyle="rgb(63,0,125)";   ctx.fillRect(0,0,pw,7*MM_TO_PX);
+    ctx.fillStyle="rgb(123,31,162)"; ctx.fillRect(0,0,pw,3*MM_TO_PX);
+    ctx.fillStyle="rgb(63,0,125)";   ctx.fillRect(0,ph-7*MM_TO_PX,pw,7*MM_TO_PX);
+    ctx.fillStyle="rgb(123,31,162)"; ctx.fillRect(0,ph-3*MM_TO_PX,pw,3*MM_TO_PX);
+    ctx.fillStyle="rgb(255,255,255)";
+    [[20,20],[50,35],[90,18],[130,40],[170,22],[pw/MM_TO_PX-20,20],[pw/MM_TO_PX-50,35],
+     [20,ph/MM_TO_PX-20],[50,ph/MM_TO_PX-35],[pw/MM_TO_PX-20,ph/MM_TO_PX-20],
+     [30,80],[70,65],[110,90],[150,70],[pw/MM_TO_PX-30,80]
+    ].forEach(([x,y])=>{ ctx.beginPath(); ctx.arc(x*MM_TO_PX,y*MM_TO_PX,0.6*MM_TO_PX,0,Math.PI*2); ctx.fill(); });
+    ctx.fillStyle="rgb(200,180,255)";
+    [[pw/MM_TO_PX/2,25],[pw/MM_TO_PX/4,ph/MM_TO_PX/2]].forEach(([x,y])=>{
+      ctx.beginPath(); ctx.arc(x*MM_TO_PX,y*MM_TO_PX,1.2*MM_TO_PX,0,Math.PI*2); ctx.fill();
+    });
+
+  } else if (key.includes("scrapbook")) {
+    ctx.fillStyle="rgb(253,246,236)"; ctx.fillRect(0,0,pw,ph);
+    ctx.strokeStyle="rgb(240,224,200)"; ctx.lineWidth=0.2*MM_TO_PX;
+    for(let x=0;x<pw;x+=10*MM_TO_PX){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,ph); ctx.stroke(); }
+    for(let y=0;y<ph;y+=10*MM_TO_PX){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(pw,y); ctx.stroke(); }
+    const tape=(x,y,w,h,r,g,b)=>{ ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect(x,y,w,h); };
+    tape(8*MM_TO_PX,8*MM_TO_PX,20*MM_TO_PX,8*MM_TO_PX,255,230,100);
+    tape(pw-28*MM_TO_PX,8*MM_TO_PX,20*MM_TO_PX,8*MM_TO_PX,180,230,255);
+    tape(8*MM_TO_PX,ph-16*MM_TO_PX,20*MM_TO_PX,8*MM_TO_PX,255,180,180);
+    tape(pw-28*MM_TO_PX,ph-16*MM_TO_PX,20*MM_TO_PX,8*MM_TO_PX,200,255,200);
+    ctx.strokeStyle="rgb(180,140,100)"; ctx.lineWidth=MM_TO_PX;
+    ctx.strokeRect(12*MM_TO_PX,12*MM_TO_PX,pw-24*MM_TO_PX,ph-24*MM_TO_PX);
+
+  } else if (key.includes("pastel")) {
+    const bands=[[252,228,236],[248,225,241],[243,229,245],[235,234,245],[232,234,246],[227,242,253]];
+    const bh=ph/bands.length;
+    bands.forEach(([r,g,b],i)=>{ ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect(0,i*bh,pw,bh+1); });
+    ctx.fillStyle="rgba(255,255,255,0.6)";
+    for(let x=10*MM_TO_PX;x<pw;x+=15*MM_TO_PX) for(let y=10*MM_TO_PX;y<ph;y+=15*MM_TO_PX){
+      ctx.beginPath(); ctx.arc(x,y,1.2*MM_TO_PX,0,Math.PI*2); ctx.fill();
+    }
+    const rainbow=[[255,138,128],[255,190,100],[255,238,88],[149,221,128],[100,200,255],[200,150,255]];
+    const sw=pw/rainbow.length;
+    rainbow.forEach(([r,g,b],i)=>{ ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect(i*sw,0,sw,5*MM_TO_PX); });
+    [...rainbow].reverse().forEach(([r,g,b],i)=>{ ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect(i*sw,ph-5*MM_TO_PX,sw,5*MM_TO_PX); });
+  }
+
+  // 3. Ruled lines — match PDF exactly (firstLineY onwards, lineSpacing apart)
+  ctx.strokeStyle = cssHex(decor?.lineColor || tpl.pdfTitleColor || "#ccc", 0.5);
+  ctx.lineWidth   = 0.35 * MM_TO_PX;
+  for (let y = layout.firstLineY; y < ph - layout.lineSpacing; y += layout.lineSpacing) {
+    ctx.beginPath(); ctx.moveTo(layout.leftMargin, y); ctx.lineTo(pw - layout.rightMargin, y); ctx.stroke();
+  }
+}
+
 async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
   const canvas  = document.createElement("canvas");
   canvas.width  = CANVAS_W;
@@ -49,109 +210,57 @@ async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
   const fontKey = page?.meta?.font     || "default";
   const tpl     = TEMPLATES[tplKey]  || TEMPLATES.plain;
   const fontDef = HANDWRITING_FONTS[fontKey] || HANDWRITING_FONTS.default;
-  const decor   = tpl.uiDecor;
 
-  // Derived canvas constants (shared with editor + pdf via pageSpec)
-  const { headerH, footerH, firstLineY, lineSpacing, leftMargin, rightMargin, textWidth, titleY, dateY, lineY } = CANVAS;
+  const pw = CANVAS_W;
+  const ph = CANVAS_H;
 
-  // ── 1. Main background ──────────────────────────────────────────────────
-  const bgStyle   = decor?.containerBg || "#fff";
-  const bgMatch   = bgStyle.match(/#[0-9a-f]{3,6}/i);
-  ctx.fillStyle   = (bgStyle.startsWith("#") || bgStyle.startsWith("rgb")) ? bgStyle : (bgMatch ? bgMatch[0] : "#fff");
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  // ── All positions derived from mm → px, matching exportPdf.js exactly ──
+  const titleY     = TITLE_Y_MM     * MM_TO_PX;   // ~75px
+  const dateY      = DATE_Y_MM      * MM_TO_PX;   // ~105px
+  const sepY       = HEADER_LINE_Y  * MM_TO_PX;   // ~121px
+  const firstLineY = FIRST_LINE_Y_MM* MM_TO_PX;   // ~155px
+  const lineSpacing= LINE_SPACING_MM * MM_TO_PX;  // ~28px
+  const leftMargin = LEFT_MARGIN_MM  * MM_TO_PX;  // ~68px
+  const rightMargin= RIGHT_MARGIN_MM * MM_TO_PX;  // ~53px
 
-  // ── 2. Header background band ───────────────────────────────────────────
-  if (decor?.headerBg) {
-    const hbgMatch = decor.headerBg.match(/#[0-9a-f]{3,6}/i);
-    ctx.fillStyle  = hbgMatch ? hbgMatch[0] : "#eee";
-    ctx.fillRect(0, 0, CANVAS_W, headerH);
-  }
+  // Font sizes: PDF pt → screen px  (1pt = 96/72 px)
+  const titleFontPx= Math.round(13 * PT_TO_PX);   // 13pt → ~17px
+  const dateFontPx = Math.round(8  * PT_TO_PX);   // 8pt  → ~11px
+  const bodyFontPx = Math.round(BODY_FONT_SIZE_PT * PT_TO_PX); // 11pt → ~15px
 
-  // ── 3. Footer background band ───────────────────────────────────────────
-  if (decor?.footerBg) {
-    const fbgMatch = decor.footerBg.match(/#[0-9a-f]{3,6}/i);
-    ctx.fillStyle  = fbgMatch ? fbgMatch[0] : "#eee";
-    ctx.fillRect(0, CANVAS_H - footerH, CANVAS_W, footerH);
-  }
+  // ── 1. Template background + decorations + ruled lines ──────────────────
+  drawTemplateBackground(ctx, tpl, pw, ph);
 
-  // ── 4. Header SVG decoration ────────────────────────────────────────────
-  if (decor?.headerSvg && decor.headerSvgH) {
-    await drawSvgOnCanvas(ctx, decor.headerSvg, CANVAS_W, headerH - Math.round(decor.headerSvgH * MM_TO_PX), Math.round(decor.headerSvgH * MM_TO_PX));
-  }
-
-  // ── 5. Footer SVG decoration ────────────────────────────────────────────
-  if (decor?.footerSvg && decor.footerSvgH) {
-    await drawSvgOnCanvas(ctx, decor.footerSvg, CANVAS_W, CANVAS_H - footerH, Math.round(decor.footerSvgH * MM_TO_PX));
-  }
-
-  // ── 6. Header / footer border lines ────────────────────────────────────
-  ctx.strokeStyle = tpl.pdfTitleColor || "#555";
-  ctx.lineWidth   = 2;
-  ctx.beginPath(); ctx.moveTo(0, headerH); ctx.lineTo(CANVAS_W, headerH); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0, CANVAS_H - footerH); ctx.lineTo(CANVAS_W, CANVAS_H - footerH); ctx.stroke();
-
-  // ── 7. Corner SVGs ──────────────────────────────────────────────────────
-  if (decor?.cornerSvg && decor.cornerSize) {
-    const sz = Math.round(decor.cornerSize * MM_TO_PX);
-    const corners = [
-      { x: 0,           y: headerH,                    rot: 0   },
-      { x: CANVAS_W-sz, y: headerH,                    rot: 90  },
-      { x: 0,           y: CANVAS_H - footerH - sz,    rot: 270 },
-      { x: CANVAS_W-sz, y: CANVAS_H - footerH - sz,    rot: 180 },
-    ];
-    for (const c of corners) {
-      ctx.save();
-      ctx.translate(c.x + sz/2, c.y + sz/2);
-      ctx.rotate((c.rot * Math.PI) / 180);
-      ctx.translate(-sz/2, -sz/2);
-      const svgStr = decor.cornerSvg(sz);
-      await drawSvgOnCanvas(ctx, () => svgStr, sz, 0, sz);
-      ctx.restore();
-    }
-  }
-
-  // ── 8. Ruled lines ──────────────────────────────────────────────────────
-  ctx.strokeStyle = (decor?.lineColor || tpl.pdfTitleColor || "#ccc") + "88";
-  ctx.lineWidth   = 0.7;
-  for (let y = firstLineY; y < CANVAS_H - footerH - 8; y += lineSpacing) {
-    ctx.beginPath(); ctx.moveTo(leftMargin, y); ctx.lineTo(CANVAS_W - rightMargin, y); ctx.stroke();
-  }
-
-  // ── 9. Title ────────────────────────────────────────────────────────────
-  const titleColor = decor?.textareaColor || tpl.pdfTitleColor || "#202124";
-  ctx.fillStyle  = titleColor;
-  ctx.font       = `bold ${Math.round(TITLE_Y_MM * MM_TO_PX * 0.55)}px -apple-system, sans-serif`;
+  // ── 2. Title (bold, 13pt) ────────────────────────────────────────────────
+  ctx.fillStyle = cssHex(tpl.pdfTitleColor || "#202124");
+  ctx.font      = `bold ${titleFontPx}px -apple-system, Helvetica, sans-serif`;
   ctx.fillText(selectedFile?.name || "Diary Entry", leftMargin, titleY);
 
-  // ── 10. Date + page number ──────────────────────────────────────────────
-  ctx.font        = `${Math.round(dateY * MM_TO_PX * 0.32)}px -apple-system, sans-serif`;
-  ctx.globalAlpha = 0.6;
+  // ── 3. Date + page number (8pt, dimmed) ─────────────────────────────────
+  ctx.font        = `${dateFontPx}px -apple-system, Helvetica, sans-serif`;
+  ctx.fillStyle   = cssHex(tpl.pdfTextColor || "#555555");
+  ctx.globalAlpha = 0.55;
   ctx.fillText(new Date(selectedFile?.createdAt).toDateString(), leftMargin, dateY);
   ctx.textAlign   = "right";
-  ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, CANVAS_W - rightMargin, dateY);
+  ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, pw - rightMargin, dateY);
   ctx.textAlign   = "left";
   ctx.globalAlpha = 1;
 
-  // Separator
-  ctx.strokeStyle = titleColor; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(leftMargin, lineY); ctx.lineTo(CANVAS_W - rightMargin, lineY); ctx.stroke();
+  // ── 4. Separator line ────────────────────────────────────────────────────
+  ctx.strokeStyle = cssHex(tpl.pdfTitleColor || "#202124");
+  ctx.lineWidth   = 0.4 * MM_TO_PX;
+  ctx.beginPath(); ctx.moveTo(leftMargin, sepY); ctx.lineTo(pw - rightMargin, sepY); ctx.stroke();
 
-  // ── 11. Body text — same font family as editor, word-wrapped ───────────
-  // Use the Google Font family name if available, fall back to sans-serif.
-  // This matches what the editor shows (Google Font is loaded in the browser).
-  const bodyFontFamily = fontDef.editorFamily !== "inherit"
-    ? fontDef.editorFamily + ", sans-serif"
-    : "-apple-system, sans-serif";
-
-  // Font size: convert BODY_FONT_SIZE_PT to px (1pt = 1.333px at 96dpi)
-  const bodyFontPx = Math.round(BODY_FONT_SIZE_PT * 1.333);
-  const fontSpec   = `${bodyFontPx}px ${bodyFontFamily}`;
+  // ── 5. Body text (11pt, chosen handwriting font if loaded) ──────────────
+  const bodyFamily = fontDef.editorFamily !== "inherit"
+    ? fontDef.editorFamily + ", -apple-system, sans-serif"
+    : "-apple-system, Helvetica, sans-serif";
+  const fontSpec = `${bodyFontPx}px ${bodyFamily}`;
   ctx.font      = fontSpec;
-  ctx.fillStyle = decor?.textareaColor || tpl.pdfTextColor || "#202124";
+  ctx.fillStyle = cssHex(tpl.pdfTextColor || "#202124");
 
-  // Word-wrap using canvas measureText — exactly matches PDF word boundaries
-  const wrappedLines = wrapWords(ctx, rawText, textWidth, fontSpec);
-
+  const textWidthPx = pw - leftMargin - rightMargin;
+  const wrappedLines = wrapWords(ctx, rawText, textWidthPx, fontSpec);
   wrappedLines.slice(0, MAX_LINES_PER_PAGE).forEach((line, i) => {
     ctx.fillText(line, leftMargin, firstLineY + i * lineSpacing);
   });
@@ -159,21 +268,28 @@ async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
   return canvas;
 }
 
-// Flatten overlays onto a canvas and return dataURL
+// Flatten overlays onto a canvas.
+// Sticker x/y/size are stored in editor "pageWidth" coords (max 780px logical width).
+// The canvas is CANVAS_W (794px) wide, so we scale by CANVAS_W / 780.
+const EDITOR_PAGE_W = 780;
 async function flattenPageCanvas(baseCanvas, pageOverlays) {
   const out = document.createElement("canvas");
   out.width = CANVAS_W; out.height = CANVAS_H;
   const ctx = out.getContext("2d");
   ctx.drawImage(baseCanvas, 0, 0);
-  for (const ov of pageOverlays) {
+  const scale = CANVAS_W / EDITOR_PAGE_W;
+  for (const ov of (pageOverlays || [])) {
     try {
-      const imgEl = await loadImg(ov.src);
+      const imgEl  = await loadImg(ov.src);
+      const cx     = (ov.x + ov.size / 2) * scale;
+      const cy     = (ov.y + ov.size / 2) * scale;
+      const halfSz = (ov.size / 2) * scale;
       ctx.save();
-      ctx.translate(ov.x + ov.size / 2, ov.y + ov.size / 2);
+      ctx.translate(cx, cy);
       if (ov.rotation) ctx.rotate((ov.rotation * Math.PI) / 180);
-      ctx.drawImage(imgEl, -ov.size / 2, -ov.size / 2, ov.size, ov.size);
+      ctx.drawImage(imgEl, -halfSz, -halfSz, halfSz * 2, halfSz * 2);
       ctx.restore();
-    } catch {}
+    } catch (e) { console.warn("overlay render failed:", e.message); }
   }
   return out;
 }
@@ -183,17 +299,13 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
   const [previewImgs, setPreviewImgs]   = useState([]);  // dataURLs with overlays composited
   const [rendering, setRendering]       = useState(true);
   const [previewPage, setPreviewPage]   = useState(0);
-  const [overlays, setOverlays]         = useState(() => pages.map(() => []));
-  const [activeTab, setActiveTab]       = useState("stickers");
-  const [activeCat, setActiveCat]       = useState(0);
+  // Overlays are seeded from pages[i].overlays (stickers added in Editor)
+  // Preview-only additions (if any) are merged on top in local state.
   const [downloading, setDownloading]   = useState(false);
   const [dlFormat, setDlFormat]         = useState(null);     // "pdf" | "image" | null
   const [showShareDialog, setShowShareDialog] = useState(false);
-  const [dragState, setDragState]       = useState(null);
-  const [resizeState, setResizeState]   = useState(null);
-  const [hoveredId, setHoveredId]       = useState(null);
-  const pageRef   = useRef(null);
-  const fileInputRef = useRef(null);
+
+  const pageRef = useRef(null);
 
   // Render base canvases on mount
   useEffect(() => {
@@ -213,68 +325,22 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
     (async () => {
       const imgs = [];
       for (let i = 0; i < baseCanvases.length; i++) {
-        const out = await flattenPageCanvas(baseCanvases[i], overlays[i] || []);
+        // Merge: editor overlays (pages[i].overlays) + preview-added overlays
+        const editorOvs  = pages[i]?.overlays || [];
+        const previewOvs = overlays[i] || [];
+        // deduplicate by id: editor overlays take precedence
+        const editorIds  = new Set(editorOvs.map((o) => o.id));
+        const merged     = [...editorOvs, ...previewOvs.filter((o) => !editorIds.has(o.id))];
+        const out = await flattenPageCanvas(baseCanvases[i], merged);
         imgs.push(out.toDataURL("image/png"));
       }
       setPreviewImgs(imgs);
     })();
-  }, [baseCanvases, overlays]);
+  }, [baseCanvases, overlays, pages]);
 
-  // ── Overlay helpers ───────────────────────────────────────────────────────
-  const addOverlay = (o) =>
-    setOverlays((prev) => prev.map((arr, i) => i === previewPage ? [...arr, o] : arr));
+  // ── (overlays removed) ──
 
-  const updateOverlay = useCallback((id, patch) =>
-    setOverlays((prev) =>
-      prev.map((arr, i) =>
-        i === previewPage ? arr.map((o) => o.id === id ? { ...o, ...patch } : o) : arr
-      )
-    ), [previewPage]);
-
-  const removeOverlay = (id) =>
-    setOverlays((prev) => prev.map((arr, i) => i === previewPage ? arr.filter((o) => o.id !== id) : arr));
-
-  const addSticker = (s) =>
-    addOverlay({ id: `s-${Date.now()}`, type: "sticker", src: s.url, alt: s.alt, x: 80, y: 80, size: 60, rotation: 0 });
-
-  const addUserImage = (file) => {
-    const reader = new FileReader();
-    reader.onload = (e) => addOverlay({ id: `img-${Date.now()}`, type: "image", src: e.target.result, x: 60, y: 120, size: 120, rotation: 0 });
-    reader.readAsDataURL(file);
-  };
-
-  // ── Drag ─────────────────────────────────────────────────────────────────
-  const onPointerDownOverlay = useCallback((e, ov) => {
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDragState({ id: ov.id, startX: e.clientX, startY: e.clientY, origX: ov.x, origY: ov.y });
-  }, []);
-
-  const onPointerMoveOverlay = useCallback((e) => {
-    if (!dragState) return;
-    const rect = pageRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const scale = CANVAS_W / rect.width;
-    updateOverlay(dragState.id, {
-      x: dragState.origX + (e.clientX - dragState.startX) * scale,
-      y: dragState.origY + (e.clientY - dragState.startY) * scale,
-    });
-  }, [dragState, updateOverlay]);
-
-  // ── Resize ────────────────────────────────────────────────────────────────
-  const onPointerDownResize = useCallback((e, ov) => {
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setResizeState({ id: ov.id, startX: e.clientX, origSize: ov.size });
-  }, []);
-
-  const onPointerMoveResize = useCallback((e) => {
-    if (!resizeState) return;
-    const rect = pageRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const scale = CANVAS_W / rect.width;
-    updateOverlay(resizeState.id, { size: Math.max(24, resizeState.origSize + (e.clientX - resizeState.startX) * scale) });
-  }, [resizeState, updateOverlay]);
+  // ── (drag removed) ──
 
   // ── Download PDF ─────────────────────────────────────────────────────────
   const downloadPdf = async () => {
@@ -323,22 +389,36 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
           pdfdoc.text(line, layout.leftMargin, layout.firstLineY + i * layout.lineSpacing);
         });
 
-        // Overlays
-        for (const ov of (overlays[index] || [])) {
+        // Overlays — merge editor overlays + preview-only overlays
+        const editorOvs2  = pages[index]?.overlays || [];
+        const previewOvs2 = overlays[index] || [];
+        const editorIds2  = new Set(editorOvs2.map((o) => o.id));
+        const allOvs      = [...editorOvs2, ...previewOvs2.filter((o) => !editorIds2.has(o.id))];
+
+        // Sticker coords are stored in editor pageWidth (780px) units.
+        // Convert to mm for jsPDF: (coord_px / 780) * PAGE_W_MM
+        const PAGE_W_MM_PDF = 210;
+        const coordToMm = (px) => (px / EDITOR_PAGE_W) * PAGE_W_MM_PDF;
+
+        for (const ov of allOvs) {
           try {
             const imgEl  = await loadImg(ov.src);
-            const c = document.createElement("canvas");
-            c.width = c.height = Math.round(ov.size);
+            const szPx   = Math.round(ov.size);
+            const c      = document.createElement("canvas");
+            c.width = c.height = szPx;
             const cx = c.getContext("2d");
             if (ov.rotation) {
-              cx.translate(ov.size / 2, ov.size / 2);
+              cx.translate(szPx/2, szPx/2);
               cx.rotate((ov.rotation * Math.PI) / 180);
-              cx.drawImage(imgEl, -ov.size / 2, -ov.size / 2, ov.size, ov.size);
+              cx.drawImage(imgEl, -szPx/2, -szPx/2, szPx, szPx);
             } else {
-              cx.drawImage(imgEl, 0, 0, ov.size, ov.size);
+              cx.drawImage(imgEl, 0, 0, szPx, szPx);
             }
-            pdfdoc.addImage(c.toDataURL("image/png"), "PNG", ov.x / MM_TO_PX, ov.y / MM_TO_PX, ov.size / MM_TO_PX, ov.size / MM_TO_PX);
-          } catch {}
+            // x, y, w, h all in mm
+            pdfdoc.addImage(c.toDataURL("image/png"), "PNG",
+              coordToMm(ov.x), coordToMm(ov.y),
+              coordToMm(ov.size), coordToMm(ov.size));
+          } catch (e) { console.warn("PDF overlay failed:", e.message); }
         }
       }
       const safeName = (selectedFile.name || "diary").replace(/[^a-z0-9_-]/gi, "_");
@@ -352,8 +432,13 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
     try {
       // Composite each page with its overlays, then stack vertically
       const flatCanvases = [];
-      for (let i = 0; i < baseCanvases.length; i++)
-        flatCanvases.push(await flattenPageCanvas(baseCanvases[i], overlays[i] || []));
+      for (let i = 0; i < baseCanvases.length; i++) {
+        const editorOvs3  = pages[i]?.overlays || [];
+        const previewOvs3 = overlays[i] || [];
+        const editorIds3  = new Set(editorOvs3.map((o) => o.id));
+        const merged3     = [...editorOvs3, ...previewOvs3.filter((o) => !editorIds3.has(o.id))];
+        flatCanvases.push(await flattenPageCanvas(baseCanvases[i], merged3));
+      }
 
       const combined = document.createElement("canvas");
       combined.width  = CANVAS_W;
@@ -368,15 +453,12 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
     } finally { setDownloading(false); setDlFormat(null); }
   };
 
-  const curOverlays = overlays[previewPage] || [];
   const pageImg     = previewImgs[previewPage];
   const firstPageText = typeof pages[0] === "string" ? pages[0] : (pages[0]?.data ?? "");
 
   return (
     <div
       style={st.backdrop}
-      onPointerMove={(e) => { onPointerMoveOverlay(e); onPointerMoveResize(e); }}
-      onPointerUp={() => { setDragState(null); setResizeState(null); }}
     >
       <div style={st.modal}>
 
@@ -425,30 +507,6 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
               ) : (
                 <div ref={pageRef} style={{ position: "relative", display: "inline-block", lineHeight: 0, maxWidth: "100%" }}>
                   <img src={pageImg} alt="page" style={{ width: "100%", borderRadius: 4, display: "block", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" }} draggable={false} />
-
-                  {curOverlays.map((ov) => {
-                    const rect  = pageRef.current?.getBoundingClientRect() || { width: CANVAS_W };
-                    const scale = rect.width / CANVAS_W;
-                    const isHov = hoveredId === ov.id;
-                    return (
-                      <div key={ov.id}
-                        style={{ position: "absolute", left: ov.x * scale, top: ov.y * scale, width: ov.size * scale, height: ov.size * scale, cursor: "move", transform: ov.rotation ? `rotate(${ov.rotation}deg)` : undefined, userSelect: "none" }}
-                        onPointerDown={(e) => onPointerDownOverlay(e, ov)}
-                        onPointerEnter={() => setHoveredId(ov.id)}
-                        onPointerLeave={() => setHoveredId(null)}
-                      >
-                        <img src={ov.src} alt={ov.alt || ""} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} draggable={false} crossOrigin="anonymous" />
-                        {isHov && <button style={st.deleteBtn} onPointerDown={(e) => e.stopPropagation()} onClick={() => removeOverlay(ov.id)}>×</button>}
-                        {isHov && <div style={st.resizeHandle} onPointerDown={(e) => onPointerDownResize(e, ov)} />}
-                        {isHov && (
-                          <div style={st.rotRow}>
-                            <button style={st.rotBtn} onPointerDown={(e) => e.stopPropagation()} onClick={() => updateOverlay(ov.id, { rotation: ((ov.rotation || 0) - 15 + 360) % 360 })}>↺</button>
-                            <button style={st.rotBtn} onPointerDown={(e) => e.stopPropagation()} onClick={() => updateOverlay(ov.id, { rotation: ((ov.rotation || 0) + 15) % 360 })}>↻</button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
                 </div>
               )}
             </div>
