@@ -517,9 +517,10 @@ export const TEMPLATE_KEYS = Object.keys(TEMPLATES);
 
 export const ensureMeta = (page) => {
   if (typeof page === "string")
-    return { data: page, meta: { template: "plain", font: "default" } };
+    return { data: page, meta: { template: "plain", font: "default" }, photos: [] };
   return {
-    data: page?.data ?? "",
-    meta: { template: page?.meta?.template ?? "plain", font: page?.meta?.font ?? "default" },
+    data:   page?.data   ?? "",
+    meta:   { template: page?.meta?.template ?? "plain", font: page?.meta?.font ?? "default" },
+    photos: page?.photos ?? [],
   };
 };
