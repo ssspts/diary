@@ -9,12 +9,12 @@ function Highlight({ text, query }) {
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
   if (idx === -1) return <span>{text}</span>;
   return (
-    <span>
+      <span>
       {text.slice(0, idx)}
-      <mark style={{ background:"#fbbc04", color:"#202124", borderRadius:2, padding:"0 1px" }}>
+        <mark style={{ background:"#fbbc04", color:"#202124", borderRadius:2, padding:"0 1px" }}>
         {text.slice(idx, idx + query.length)}
       </mark>
-      {text.slice(idx + query.length)}
+        {text.slice(idx + query.length)}
     </span>
   );
 }
@@ -41,145 +41,154 @@ function bodySnippet(text, query, maxLen = 80) {
 }
 
 export default function Navbar({
-  user, menuRef, searchRef,
-  showMenu, setShowMenu, setShowProfile,
-  searchQuery, setSearchQuery,
-  searchFocused, setSearchFocused,
-  searchResults,
-  onSearchSelect,
-  onLogout,
-  appTitle, onAppTitleSave,
-}) {
+                                 user, menuRef, searchRef,
+                                 showMenu, setShowMenu, setShowProfile, onFeedback,
+                                 searchQuery, setSearchQuery,
+                                 searchFocused, setSearchFocused,
+                                 searchResults,
+                                 onSearchSelect,
+                                 onLogout,
+                                 appTitle, onAppTitleSave,
+                               }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [tempTitle,    setTempTitle]    = useState("");
   const showDrop = searchFocused && searchQuery.trim().length > 0;
 
   return (
-    <nav style={s.bar}>
-      {/* App title */}
-      {editingTitle ? (
-        <input
-          autoFocus value={tempTitle}
-          onChange={(e) => setTempTitle(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter")  { onAppTitleSave(tempTitle); setEditingTitle(false); }
-            if (e.key === "Escape") { setEditingTitle(false); }
-          }}
-          onBlur={() => { onAppTitleSave(tempTitle); setEditingTitle(false); }}
-          style={st.titleInput}
-        />
-      ) : (
-        <span style={{ ...s.brand, cursor:"pointer" }} title="Click to rename"
-          onClick={() => { setTempTitle(appTitle); setEditingTitle(true); }}>
+      <nav style={s.bar}>
+        {/* App title */}
+        {editingTitle ? (
+            <input
+                autoFocus value={tempTitle}
+                onChange={(e) => setTempTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")  { onAppTitleSave(tempTitle); setEditingTitle(false); }
+                  if (e.key === "Escape") { setEditingTitle(false); }
+                }}
+                onBlur={() => { onAppTitleSave(tempTitle); setEditingTitle(false); }}
+                style={st.titleInput}
+            />
+        ) : (
+            <span style={{ ...s.brand, cursor:"pointer" }} title="Click to rename"
+                  onClick={() => { setTempTitle(appTitle); setEditingTitle(true); }}>
           📖 {appTitle}
         </span>
-      )}
+        )}
 
-      {/* Search */}
-      <div ref={searchRef} style={s.center}>
-        <div style={s.searchWrapper}>
-          <span style={s.searchIcon}>🔍</span>
-          <input
-            type="text"
-            placeholder="Search entries by title, date or content…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            style={s.searchInput}
-          />
-          {searchQuery && (
-            <button style={s.searchClear}
-              onClick={() => { setSearchQuery(""); setSearchFocused(false); }}>✕</button>
-          )}
+        {/* Search */}
+        <div ref={searchRef} style={s.center}>
+          <div style={s.searchWrapper}>
+            <span style={s.searchIcon}>🔍</span>
+            <input
+                type="text"
+                placeholder="Search entries by title, date or content…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                style={s.searchInput}
+            />
+            {searchQuery && (
+                <button style={s.searchClear}
+                        onClick={() => { setSearchQuery(""); setSearchFocused(false); }}>✕</button>
+            )}
 
-          {/* ── Dropdown ── */}
-          {showDrop && (
-            <div style={st.dropdown}>
-              {searchResults.length === 0 ? (
-                <div style={st.noResult}>
-                  <span style={{ fontSize:20 }}>🔍</span>
-                  <div style={{ marginTop:6, fontSize:13, color:"#80868b" }}>No entries found</div>
-                  <div style={{ fontSize:11, color:"#9aa0a6", marginTop:2 }}>Try a different title, date or keyword</div>
-                </div>
-              ) : (
-                <>
-                  <div style={st.resultCount}>
-                    {searchResults.length} result{searchResults.length !== 1 ? "s" : ""}
-                  </div>
-                  {searchResults.map((r, i) => (
-                    <HoverRow
-                      key={i}
-                      style={st.resultRow}
-                      onClick={() => {
-                        onSearchSelect(r);
-                        setSearchQuery("");
-                        setSearchFocused(false);
-                      }}
-                    >
-                      {/* Left: diary emoji badge */}
-                      <div style={st.resultEmoji}>{r.diaryEmoji}</div>
-
-                      {/* Right: details */}
-                      <div style={st.resultBody}>
-                        {/* Row 1: diary name */}
-                        <div style={st.resultDiary}>
-                          <Highlight text={r.diaryName} query={searchQuery} />
+            {/* ── Dropdown ── */}
+            {showDrop && (
+                <div style={st.dropdown}>
+                  {searchResults.length === 0 ? (
+                      <div style={st.noResult}>
+                        <span style={{ fontSize:20 }}>🔍</span>
+                        <div style={{ marginTop:6, fontSize:13, color:"#80868b" }}>No entries found</div>
+                        <div style={{ fontSize:11, color:"#9aa0a6", marginTop:2 }}>Try a different title, date or keyword</div>
+                      </div>
+                  ) : (
+                      <>
+                        <div style={st.resultCount}>
+                          {searchResults.length} result{searchResults.length !== 1 ? "s" : ""}
                         </div>
+                        {searchResults.map((r, i) => (
+                            <HoverRow
+                                key={i}
+                                style={st.resultRow}
+                                onClick={() => {
+                                  onSearchSelect(r);
+                                  setSearchQuery("");
+                                  setSearchFocused(false);
+                                }}
+                            >
+                              {/* Left: diary emoji badge */}
+                              <div style={st.resultEmoji}>{r.diaryEmoji}</div>
 
-                        {/* Row 2: entry title */}
-                        <div style={st.resultTitle}>
-                          <Highlight
-                            text={r.entryTitle || formatDate(r.dateKey)}
-                            query={searchQuery}
-                          />
-                        </div>
+                              {/* Right: details */}
+                              <div style={st.resultBody}>
+                                {/* Row 1: diary name */}
+                                <div style={st.resultDiary}>
+                                  <Highlight text={r.diaryName} query={searchQuery} />
+                                </div>
 
-                        {/* Row 3: date + body snippet */}
-                        <div style={st.resultMeta}>
-                          <span style={st.resultDate}>{formatDate(r.dateKey)}</span>
-                          {r.contentText && (
-                            <>
-                              <span style={{ color:"#dadce0", margin:"0 4px" }}>·</span>
-                              <span style={st.resultSnippet}>
+                                {/* Row 2: entry title */}
+                                <div style={st.resultTitle}>
+                                  <Highlight
+                                      text={r.entryTitle || formatDate(r.dateKey)}
+                                      query={searchQuery}
+                                  />
+                                </div>
+
+                                {/* Row 3: date + body snippet */}
+                                <div style={st.resultMeta}>
+                                  <span style={st.resultDate}>{formatDate(r.dateKey)}</span>
+                                  {r.contentText && (
+                                      <>
+                                        <span style={{ color:"#dadce0", margin:"0 4px" }}>·</span>
+                                        <span style={st.resultSnippet}>
                                 <Highlight
-                                  text={bodySnippet(r.contentText, searchQuery)}
-                                  query={searchQuery}
+                                    text={bodySnippet(r.contentText, searchQuery)}
+                                    query={searchQuery}
                                 />
                               </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </HoverRow>
-                  ))}
-                </>
-              )}
-            </div>
+                                      </>
+                                  )}
+                                </div>
+                              </div>
+                            </HoverRow>
+                        ))}
+                      </>
+                  )}
+                </div>
+            )}
+          </div>
+        </div>
+
+        {/* Feedback button */}
+        <button
+            style={st2.feedbackBtn}
+            onClick={onFeedback}
+            title="Send feedback"
+        >
+          💬 Feedback
+        </button>
+
+        {/* Avatar */}
+        <div ref={menuRef} style={s.userSection}>
+          <img src={user.photoURL} alt="avatar" style={s.avatar}
+               onClick={(e) => { e.stopPropagation(); setShowMenu((v) => !v); }} />
+          {showMenu && (
+              <div style={s.userDropdown}>
+                <HoverRow style={s.dropdownRow} onClick={() => { setShowProfile(true); setShowMenu(false); }}>
+                  <img src={user.photoURL} alt="" style={s.dropdownAvatar} />
+                  <div>
+                    <div style={s.dropdownName}>{user.displayName || "User"}</div>
+                    <div style={s.dropdownEmail}>{user.email}</div>
+                  </div>
+                </HoverRow>
+                <div style={s.divider} />
+                <HoverRow style={s.dropdownRow} onClick={onLogout}>
+                  <span style={{ fontSize:14, color:"#3c4043" }}>Sign out</span>
+                </HoverRow>
+              </div>
           )}
         </div>
-      </div>
-
-      {/* Avatar */}
-      <div ref={menuRef} style={s.userSection}>
-        <img src={user.photoURL} alt="avatar" style={s.avatar}
-          onClick={(e) => { e.stopPropagation(); setShowMenu((v) => !v); }} />
-        {showMenu && (
-          <div style={s.userDropdown}>
-            <HoverRow style={s.dropdownRow} onClick={() => { setShowProfile(true); setShowMenu(false); }}>
-              <img src={user.photoURL} alt="" style={s.dropdownAvatar} />
-              <div>
-                <div style={s.dropdownName}>{user.displayName || "User"}</div>
-                <div style={s.dropdownEmail}>{user.email}</div>
-              </div>
-            </HoverRow>
-            <div style={s.divider} />
-            <HoverRow style={s.dropdownRow} onClick={onLogout}>
-              <span style={{ fontSize:14, color:"#3c4043" }}>Sign out</span>
-            </HoverRow>
-          </div>
-        )}
-      </div>
-    </nav>
+      </nav>
   );
 }
 
@@ -237,5 +246,23 @@ const st = {
   noResult: {
     padding:"28px 16px", textAlign:"center",
     display:"flex", flexDirection:"column", alignItems:"center",
+  },
+};
+
+const st2 = {
+  feedbackBtn: {
+    display:      "flex",
+    alignItems:   "center",
+    gap:          5,
+    padding:      "6px 12px",
+    border:       "1px solid #dadce0",
+    borderRadius: 20,
+    background:   "#fff",
+    cursor:       "pointer",
+    fontSize:     12,
+    fontWeight:   500,
+    color:        "#3c4043",
+    whiteSpace:   "nowrap",
+    flexShrink:   0,
   },
 };

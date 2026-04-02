@@ -337,7 +337,7 @@ export default function PdfPreview({ selectedFile, pages, onClose }) {
         </div>
 
         {showShareDialog && (
-            <ShareDialog title={selectedFile?.name||"Diary Entry"} text={firstPageText} imageUrl={previewImgs[0]} onClose={() => setShowShareDialog(false)} />
+            <ShareDialog title={selectedFile?.name||"Diary Entry"} text={firstPageText} imageUrl={previewImgs[0]} allPageUrls={previewImgs} onClose={() => setShowShareDialog(false)} />
         )}
       </div>
   );
