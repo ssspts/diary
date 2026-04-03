@@ -1,188 +1,292 @@
 // src/hooks/useDiary.js
-// ─────────────────────────────────────────────────────────────────────────────
-// Single hook that owns ALL shared state and Firestore operations.
-// Components receive what they need via props from App.jsx — none of them
-// import this hook directly, keeping the data layer in one place.
-// ─────────────────────────────────────────────────────────────────────────────
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { signOut, onAuthStateChanged, signInWithPopup } from "firebase/auth";
-import { collection, addDoc, deleteDoc, doc, updateDoc, getDocs } from "firebase/firestore";
+import {
+  collection, addDoc, deleteDoc, doc,
+  updateDoc, getDocs, getDoc, setDoc,
+} from "firebase/firestore";
 import { auth, db, provider } from "../firebase";
 import { ensureMeta } from "../utils/templates";
 
+const toDateKey = (d) => {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y  = dt.getFullYear();
+  const m  = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+};
+
+const fromDateKey = (key) => {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+
+const buildDefaultTitle = (diaryName, date) => {
+  const d = date instanceof Date ? date : new Date(date);
+  const formatted = d.toLocaleDateString("en-GB", {
+    weekday: "short", day: "numeric", month: "short", year: "numeric",
+  });
+  return `${diaryName} · ${formatted}`;
+};
+
+export { toDateKey, fromDateKey, buildDefaultTitle };
+
 export function useDiary() {
-  // ── Auth ──────────────────────────────────────────────────────────────────
   const [user, setUser] = useState(null);
 
-  // ── File / entry state ────────────────────────────────────────────────────
-  const [files, setFiles]                   = useState([]);
-  const [selectedFile, setSelectedFile]     = useState(null);
-  const [selectedDate, setSelectedDate]     = useState(new Date());
-  const [loading, setLoading]               = useState(false);
+  const [diaries,         setDiaries]         = useState([]);
+  const [selectedDiary,   setSelectedDiary]   = useState(null);
+  const [loadingDiaries,  setLoadingDiaries]  = useState(false);
+  const [deletingDiaryId, setDeletingDiaryId] = useState(null);
+  const [editingDiaryId,  setEditingDiaryId]  = useState(null);
+  const [tempDiaryName,   setTempDiaryName]   = useState("");
 
-  // ── Editor state ──────────────────────────────────────────────────────────
-  const [pages, setPages]                   = useState([]);
-  const [currentPage, setCurrentPage]       = useState(0);
-  const [isDirty, setIsDirty]               = useState(false);
-  const [saving, setSaving]                 = useState(false);
-  const [editingTitle, setEditingTitle]     = useState(false);
-  const [tempTitle, setTempTitle]           = useState("");
-
-  // ── File list state ───────────────────────────────────────────────────────
-  const [deletingFileId, setDeletingFileId] = useState(null);
-  const [editingFileId, setEditingFileId]   = useState(null);
-  const [tempFileName, setTempFileName]     = useState("");
-
-  // ── Search state ──────────────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery]       = useState("");
-  const [searchResults, setSearchResults]   = useState([]);
-  const [searchFocused, setSearchFocused]   = useState(false);
-
-  // ── UI state ─────────────────────────────────────────────────────────────
+  const [entriesMeta,    setEntriesMeta]    = useState({});
+  const [selectedDate,   setSelectedDate]   = useState(new Date());
   const [expandedMonths, setExpandedMonths] = useState({});
-  const [showMenu, setShowMenu]             = useState(false);
-  const [showProfile, setShowProfile]       = useState(false);
-  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
-  // ── Refs ─────────────────────────────────────────────────────────────────
+  const [pages,       setPages]       = useState([]);
+  const [currentPage, setCurrentPage] = useState(0);
+
+  // ── Two separate dirty flags ───────────────────────────────────────────────
+  // isDirty   : true when save button should be active (new entry OR user typed)
+  // hasEdits  : true ONLY when user has actually typed/changed something
+  //             — this is what triggers the "unsaved changes" navigation warning
+  const [isDirty,   setIsDirty]   = useState(false);
+  const [hasEdits,  setHasEdits]  = useState(false);
+
+  const [saving,      setSaving]      = useState(false);
+  const [entryTitle,  setEntryTitle]  = useState("");
+
+  const [searchQuery,   setSearchQuery]   = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchFocused, setSearchFocused] = useState(false);
+
+  const [showMenu,           setShowMenu]           = useState(false);
+  const [showProfile,        setShowProfile]        = useState(false);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [loading,            setLoading]            = useState(false);
+
+  const [appTitle, setAppTitle] = useState(
+      () => localStorage.getItem("diaryTitle") || "My Diaries"
+  );
+
   const menuRef       = useRef(null);
   const searchRef     = useRef(null);
   const titleInputRef = useRef(null);
 
-  // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
-      if (u) fetchFiles(u.uid);
+      if (u) { fetchDiaries(u.uid); fetchSettings(u.uid); }
     });
     return () => unsub();
   }, []);
 
-  // ── Outside-click: close menu and search dropdown ─────────────────────────
   useEffect(() => {
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false);
+    const h = (e) => {
+      if (menuRef.current   && !menuRef.current.contains(e.target))   setShowMenu(false);
       if (searchRef.current && !searchRef.current.contains(e.target)) setSearchFocused(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // ── Search filter ─────────────────────────────────────────────────────────
+  // Search
   useEffect(() => {
-    if (!searchQuery.trim()) { setSearchResults([]); return; }
+    if (!searchQuery.trim() || !selectedDiary) { setSearchResults([]); return; }
     const q = searchQuery.toLowerCase();
-    setSearchResults(
-      files.filter((f) => {
-        const nameHit = (f.name || "").toLowerCase().includes(q);
-        const body = Array.isArray(f.content)
-          ? f.content.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ")
-          : (f.content ?? "");
-        return nameHit || body.toLowerCase().includes(q);
-      })
-    );
-  }, [searchQuery, files]);
+    const hits = Object.entries(entriesMeta)
+        .filter(([key, meta]) => {
+          return key.toLowerCase().includes(q) ||
+              (meta.entryTitle || "").toLowerCase().includes(q) ||
+              (meta.contentText || "").toLowerCase().includes(q);
+        })
+        .map(([key, meta]) => ({
+          dateKey:     key,
+          date:        fromDateKey(key),
+          entryTitle:  meta.entryTitle || "",
+          contentText: meta.contentText || "",
+          diaryId:     selectedDiary.id,
+          diaryName:   selectedDiary.name,
+          diaryEmoji:  selectedDiary.emoji || "📔",
+        }))
+        .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+    setSearchResults(hits);
+  }, [searchQuery, entriesMeta, selectedDiary]);
 
-  // ── Ctrl/Cmd+S to save ────────────────────────────────────────────────────
+  // Ctrl/Cmd+S
   useEffect(() => {
-    const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        if (selectedFile) saveContent();
-      }
+    const h = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveContent(); }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFile, pages]);
+  }, [selectedDiary, selectedDate, pages, entryTitle]);
 
-  // ── Warn before unload when dirty ────────────────────────────────────────
+  // ── Only warn on browser close if user has ACTUALLY edited something ───────
   useEffect(() => {
-    const h = (e) => { if (isDirty) { e.preventDefault(); e.returnValue = ""; } };
+    const h = (e) => { if (hasEdits) { e.preventDefault(); e.returnValue = ""; } };
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
-  }, [isDirty]);
+  }, [hasEdits]);
 
-  // ── Firestore helpers ─────────────────────────────────────────────────────
-  const fetchFiles = async (uid) => {
-    const snap = await getDocs(collection(db, "users", uid, "files"));
-    setFiles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  const fetchDiaries = async (uid) => {
+    setLoadingDiaries(true);
+    try {
+      const snap = await getDocs(collection(db, "users", uid, "diaries"));
+      const list = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      setDiaries(list);
+    } finally { setLoadingDiaries(false); }
   };
 
-  const openFile = useCallback((file) => {
-    if (isDirty && !window.confirm("You have unsaved changes. Discard and open this entry?")) return;
-    const filePages = (!file.content || file.content.length === 0)
-      ? [ensureMeta("")]
-      : file.content.map(ensureMeta);
-    setPages(filePages);
-    setCurrentPage(0);
-    setSelectedFile(file);
-    setEditingTitle(false);
-    setIsDirty(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty]);
-
-  const addFile = async () => {
+  const addDiary = async (rawName) => {
+    const name = typeof rawName === "string" && rawName.trim() ? rawName.trim() : "New Diary";
     setLoading(true);
     try {
-      const createdAt = new Date(selectedDate).toISOString();
-      const docRef = await addDoc(collection(db, "users", user.uid, "files"), {
-        name: "New Entry", content: [], createdAt,
-      });
-      const newFile = { id: docRef.id, name: "New Entry", content: [], createdAt };
-      setFiles((prev) => [...prev, newFile]);
-      setPages([ensureMeta("")]);
-      setCurrentPage(0);
-      setSelectedFile(newFile);
-      setEditingTitle(false);
-      setIsDirty(false);
-      setTimeout(() => {
-        setTempTitle("New Entry");
-        setEditingTitle(true);
-        titleInputRef.current?.focus();
-      }, 40);
-    } finally {
-      setLoading(false);
-    }
+      const createdAt = new Date().toISOString();
+      const docRef    = await addDoc(collection(db, "users", user.uid, "diaries"), { name, emoji:"📔", createdAt });
+      const nd = { id: docRef.id, name, emoji:"📔", createdAt };
+      setDiaries((prev) => [...prev, nd]);
+      await openDiary(nd, user.uid);
+      setTimeout(() => { setEditingDiaryId(nd.id); setTempDiaryName(name); }, 60);
+    } finally { setLoading(false); }
   };
 
-  const deleteFile = async (id) => {
+  const deleteDiary = async (id) => {
     try {
-      setDeletingFileId(id);
-      await deleteDoc(doc(db, "users", user.uid, "files", id));
-      setFiles((prev) => prev.filter((f) => f.id !== id));
-      if (selectedFile?.id === id) { setSelectedFile(null); setPages([]); setIsDirty(false); }
-    } catch (e) {
-      alert("Delete failed: " + e.message);
-    } finally {
-      setDeletingFileId(null);
-    }
+      setDeletingDiaryId(id);
+      const snap = await getDocs(collection(db, "users", user.uid, "diaries", id, "entries"));
+      await Promise.all(snap.docs.map((e) => deleteDoc(e.ref)));
+      await deleteDoc(doc(db, "users", user.uid, "diaries", id));
+      setDiaries((prev) => prev.filter((d) => d.id !== id));
+      if (selectedDiary?.id === id) {
+        setSelectedDiary(null); setEntriesMeta({}); setPages([]);
+        setIsDirty(false); setHasEdits(false);
+      }
+    } catch (e) { alert("Delete failed: " + e.message); }
+    finally { setDeletingDiaryId(null); }
   };
 
-  const renameFile = async (id, newName) => {
+  const renameDiary = async (id, newName) => {
     const trimmed = (newName || "").trim();
     if (!trimmed) return;
-    await updateDoc(doc(db, "users", user.uid, "files", id), { name: trimmed });
-    setFiles((prev) => prev.map((f) => f.id === id ? { ...f, name: trimmed } : f));
-    if (selectedFile?.id === id) setSelectedFile((prev) => ({ ...prev, name: trimmed }));
+    await updateDoc(doc(db, "users", user.uid, "diaries", id), { name: trimmed });
+    setDiaries((prev) => prev.map((d) => d.id === id ? { ...d, name: trimmed } : d));
+    if (selectedDiary?.id === id) setSelectedDiary((p) => ({ ...p, name: trimmed }));
+  };
+
+  const openDiary = async (diary, uid) => {
+    const resolvedUid = uid || user?.uid;
+    if (!resolvedUid) { alert("Not signed in"); return; }
+    // ── Only confirm if user actually typed something ─────────────────────
+    if (hasEdits && !window.confirm("You have unsaved changes. Discard?")) return;
+
+    setSelectedDiary(diary);
+    setPages([]); setEntryTitle("");
+    setIsDirty(false); setHasEdits(false);
+    setCurrentPage(0); setEntriesMeta({});
+
+    let meta = {};
+    try {
+      const snap = await getDocs(collection(db, "users", resolvedUid, "diaries", diary.id, "entries"));
+      snap.docs.forEach((d) => {
+        const data     = d.data();
+        const bodyText = Array.isArray(data.content)
+            ? data.content.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ")
+            : "";
+        meta[d.id] = { date: data.date, contentText: bodyText, entryTitle: data.entryTitle || "" };
+      });
+      setEntriesMeta(meta);
+    } catch (e) { console.warn("Failed to load entries metadata:", e.message); }
+
+    // Auto-open today's date
+    const today    = new Date();
+    const monthKey = today.toLocaleString("default", { month:"long", year:"numeric" });
+    setExpandedMonths({ [monthKey]: true });
+    setSelectedDate(today);
+    await loadEntryInner(diary, resolvedUid, today);
+  };
+
+  const loadEntryInner = async (diary, uid, date) => {
+    const key = toDateKey(date);
+    const ref = doc(db, "users", uid || user?.uid, "diaries", diary.id, "entries", key);
+    try {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        const data    = snap.data();
+        const content = (data.content || []).map(ensureMeta);
+        setPages(content.length ? content : [ensureMeta("")]);
+        setEntryTitle(data.entryTitle || buildDefaultTitle(diary.name, date));
+        // Existing saved entry — not dirty, no edits
+        setIsDirty(false);
+        setHasEdits(false);
+      } else {
+        // Brand new entry — mark isDirty so Save button is active
+        // but hasEdits stays false so navigation won't warn
+        setPages([ensureMeta("")]);
+        setEntryTitle(buildDefaultTitle(diary.name, date));
+        setIsDirty(true);
+        setHasEdits(false);  // ← user hasn't typed anything yet
+      }
+    } catch (e) {
+      console.warn("Failed to load entry:", e.message);
+      setPages([ensureMeta("")]);
+      setEntryTitle(buildDefaultTitle(diary.name, date));
+      setIsDirty(true);
+      setHasEdits(false);
+    }
+    setCurrentPage(0);
+  };
+
+  const loadEntry = async (diary, date) => {
+    if (!diary || !user?.uid) return;
+    await loadEntryInner(diary, user.uid, date);
   };
 
   const saveContent = async () => {
-    if (!selectedFile) return;
+    if (!selectedDiary || !user?.uid) return;
     try {
       setSaving(true);
-      await updateDoc(doc(db, "users", user.uid, "files", selectedFile.id), { content: pages });
-      setFiles((prev) => prev.map((f) => f.id === selectedFile.id ? { ...f, content: pages } : f));
+      const key         = toDateKey(selectedDate);
+      const ref         = doc(db, "users", user.uid, "diaries", selectedDiary.id, "entries", key);
+      const titleToSave = entryTitle.trim() || buildDefaultTitle(selectedDiary.name, selectedDate);
+      await setDoc(ref, { date: key, content: pages, entryTitle: titleToSave }, { merge: true });
+      const bodyText = pages.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ");
+      setEntriesMeta((prev) => ({
+        ...prev,
+        [key]: { date: key, contentText: bodyText, entryTitle: titleToSave },
+      }));
+      setEntryTitle(titleToSave);
       setIsDirty(false);
-    } catch {
-      alert("Save failed. Please try again.");
-    } finally {
-      setSaving(false);
-    }
+      setHasEdits(false);   // after save, nothing is unsaved
+    } catch { alert("Save failed. Please try again."); }
+    finally { setSaving(false); }
   };
 
-  // ── Date helpers ──────────────────────────────────────────────────────────
-  const isSameDay = (d1, d2) => new Date(d1).toDateString() === new Date(d2).toDateString();
+  const selectDate = async (date, diary) => {
+    const targetDiary = diary || selectedDiary;
+    // ── Only confirm if user actually typed something ─────────────────────
+    if (hasEdits && !window.confirm("You have unsaved changes. Discard?")) return;
+    const newDate = date instanceof Date ? date : fromDateKey(date);
+    setSelectedDate(newDate);
+    setPages([]); setEntryTitle("");
+    setIsDirty(false); setHasEdits(false);
+    if (targetDiary) await loadEntry(targetDiary, newDate);
+  };
+
+  const openDiaryAndDate = async (diary, dateKey) => {
+    await openDiary(diary);
+    const date = fromDateKey(dateKey);
+    setSelectedDate(date);
+    await loadEntry(diary, date);
+  };
+
+  const isSameDay = (d1, d2) =>
+      new Date(d1).toDateString() === new Date(d2).toDateString();
 
   const groupDatesByMonth = () => {
     const map = {};
@@ -190,50 +294,55 @@ export function useDiary() {
     const start = new Date(2024, 0, 1);
     for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
       const date = new Date(d);
-      const key = date.toLocaleString("default", { month: "long", year: "numeric" });
+      const key  = date.toLocaleString("default", { month:"long", year:"numeric" });
       if (!map[key]) map[key] = [];
       map[key].push(new Date(date));
     }
     return Object.entries(map).reverse();
   };
 
-  const filteredFiles = files.filter((f) => {
-    if (!searchQuery) return isSameDay(f.createdAt, selectedDate);
-    const q = searchQuery.toLowerCase();
-    const body = Array.isArray(f.content)
-      ? f.content.map((p) => (typeof p === "string" ? p : p?.data ?? "")).join(" ")
-      : (f.content ?? "");
-    return (f.name ?? "").toLowerCase().includes(q) || body.toLowerCase().includes(q);
-  });
+  const fetchSettings = async (uid) => {
+    try {
+      const snap = await getDoc(doc(db, "users", uid, "settings", "preferences"));
+      if (snap.exists() && snap.data().appTitle) {
+        const t = snap.data().appTitle;
+        setAppTitle(t); localStorage.setItem("diaryTitle", t);
+      }
+    } catch {}
+  };
+
+  const updateAppTitle = async (title) => {
+    const trimmed = (title || "").trim() || "My Diaries";
+    setAppTitle(trimmed); localStorage.setItem("diaryTitle", trimmed);
+    if (user) await setDoc(doc(db, "users", user.uid, "settings", "preferences"), { appTitle: trimmed }, { merge: true });
+  };
 
   const googleLogin = () => signInWithPopup(auth, provider);
-  const logout      = () => signOut(auth);
+  const logout = async () => {
+    await signOut(auth);
+    setDiaries([]); setSelectedDiary(null); setEntriesMeta({}); setPages([]);
+    setIsDirty(false); setHasEdits(false);
+  };
 
-  // ── Expose everything components need ─────────────────────────────────────
   return {
-    // auth
     user, googleLogin, logout,
-    // files
-    files, selectedFile, selectedDate, setSelectedDate,
-    loading, filteredFiles, isSameDay,
-    openFile, addFile, deleteFile, renameFile,
-    // editor
+    appTitle, updateAppTitle,
+    diaries, selectedDiary, loadingDiaries,
+    deletingDiaryId, editingDiaryId, setEditingDiaryId,
+    tempDiaryName, setTempDiaryName,
+    addDiary, deleteDiary, renameDiary, openDiary,
+    entriesMeta, selectedDate, expandedMonths, setExpandedMonths,
+    selectDate, openDiaryAndDate,
+    groupDatesByMonth, isSameDay,
     pages, setPages, currentPage, setCurrentPage,
-    isDirty, setIsDirty, saving, saveContent,
-    editingTitle, setEditingTitle, tempTitle, setTempTitle,
-    // file list rename
-    editingFileId, setEditingFileId, tempFileName, setTempFileName,
-    deletingFileId,
-    // search
+    isDirty, setIsDirty,
+    hasEdits, setHasEdits,   // ← exposed so Editor can set hasEdits=true on user input
+    saving, saveContent,
+    entryTitle, setEntryTitle,
+    loading,
     searchQuery, setSearchQuery, searchResults, searchFocused, setSearchFocused,
-    // UI toggles
-    expandedMonths, setExpandedMonths,
-    showMenu, setShowMenu,
-    showProfile, setShowProfile,
+    showMenu, setShowMenu, showProfile, setShowProfile,
     showTemplatePicker, setShowTemplatePicker,
-    // refs
     menuRef, searchRef, titleInputRef,
-    // date sidebar
-    groupDatesByMonth,
   };
 }

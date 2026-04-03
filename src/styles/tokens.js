@@ -109,3 +109,15 @@ export const profileModal = {
   name:       { fontSize: 17, fontWeight: 700, color: "#202124", marginBottom: 2 },
   email:      { fontSize: 13, color: "#80868b" },
 };
+
+export const PAGE_LINING_STYLE = {
+  width: '100%',
+  minHeight: '100vh',
+  lineHeight: '30px',
+  paddingTop: '30px',
+  backgroundColor: '#ffffff',
+  /* This creates a 1px solid line every 30px */
+  backgroundImage: 'linear-gradient(#e5e5e5 1px, transparent 1px)',
+  backgroundSize: '100% 30px',
+  backgroundAttachment: 'local'
+};
