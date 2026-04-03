@@ -266,11 +266,20 @@ function PageSheet({ pageIndex, totalPages, pageData, template, font, photos, on
         const mFontSize = Math.round(16 * scale);
         const mLineH    = Math.round(CANVAS.lineSpacing * scale);
 
+        // Build a scaled ruled-line gradient that matches mLineH exactly,
+        // offset by mPadH so lines align with the first line of text
+        const mRuledBg = decor.lineColor
+            ? `repeating-linear-gradient(to bottom, transparent, transparent ${mLineH - 1}px, ${decor.lineColor} ${mLineH}px)`
+            : "transparent";
+        const mTextareaBg = decor.lineColor
+            ? `${mRuledBg}, ${decor.textareaBg || "#fff"}`
+            : (decor.textareaBg || "#fff");
+
         return (
             // Outer: position:relative, height:auto — grows with content
             <div style={{ position:"relative", width:"100%", minHeight:mSheetH }}>
 
-                {/* Page surface: normal flow, not absolute — so height wraps content */}
+                {/* Page surface: normal flow — height wraps content */}
                 <div style={{ width:"100%", background:decor.containerBg||"#fff", border:decor.containerBorder||"1px solid #e8eaed", borderRadius:4, boxShadow:"0 2px 8px rgba(0,0,0,0.10)", overflow:"hidden" }}>
 
                     {/* Header band */}
@@ -280,18 +289,16 @@ function PageSheet({ pageIndex, totalPages, pageData, template, font, photos, on
                         </div>
                     )}
 
-                    {/* Textarea: block in normal flow, no fixed height — grows with content */}
+                    {/* Textarea: grows with content, ruled lines aligned to text */}
                     <textarea
                         ref={(el) => {
                             if (textareaRef) { if (typeof textareaRef === "function") textareaRef(el); else textareaRef.current = el; }
                             mobileTextareaRef.current = el;
-                            // auto-size immediately on mount
                             if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
                         }}
                         value={pageData}
                         onChange={(e) => {
                             onChange(pageIndex, e.target.value);
-                            // grow textarea as user types
                             e.target.style.height = "auto";
                             e.target.style.height = e.target.scrollHeight + "px";
                         }}
@@ -310,8 +317,11 @@ function PageSheet({ pageIndex, totalPages, pageData, template, font, photos, on
                             lineHeight: `${mLineH}px`,
                             fontFamily: fDef.editorFamily,
                             color:      decor.textareaColor||"#202124",
-                            background: textareaBg,
-                            backgroundSize: `100% ${mLineH}px`,
+                            // Use scaled gradient so line height matches exactly
+                            background:           mTextareaBg,
+                            backgroundSize:       `100% ${mLineH}px`,
+                            // Offset gradient by top padding so first line aligns under rule
+                            backgroundPositionY:  `${mPadH}px`,
                             backgroundAttachment: "local",
                             boxSizing:  "border-box",
                         }}

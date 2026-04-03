@@ -150,6 +150,15 @@ async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
   const tpl     = TEMPLATES[tplKey]  || TEMPLATES.plain;
   const fontDef = HANDWRITING_FONTS[fontKey] || HANDWRITING_FONTS.default;
 
+  // ── Ensure the handwriting font is fully loaded before measuring/drawing ──
+  // Without this, ctx.measureText() uses fallback font metrics → wrong line wrapping
+  const bodyFontFamily = fontDef.editorFamily;
+  if (bodyFontFamily && bodyFontFamily !== "inherit") {
+    try {
+      await document.fonts.load(`${Math.round(BODY_FONT_SIZE_PT * (96/72))}px ${bodyFontFamily}`);
+    } catch (e) { /* font load failed, continue with fallback */ }
+  }
+
   const pw = CANVAS_W, ph = CANVAS_H;
   const titleY      = TITLE_Y_MM      * MM_TO_PX;
   const dateY       = DATE_Y_MM       * MM_TO_PX;
@@ -184,12 +193,22 @@ async function renderPageToCanvas(page, selectedFile, pageIndex, totalPages) {
   ctx.lineWidth   = 0.4 * MM_TO_PX;
   ctx.beginPath(); ctx.moveTo(leftMargin, sepY); ctx.lineTo(pw - rightMargin, sepY); ctx.stroke();
 
-  // Body text — emoji font
-  const bodyFontSpec = `${bodyFontPx}px ${EMOJI_FONT(fontDef.editorFamily)}`;
+  // "inherit" is meaningless on canvas — map it to the same system font the browser uses
+  const CANVAS_DEFAULT_FONT = "-apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif";
+  const resolvedFamily = (!bodyFontFamily || bodyFontFamily === "inherit")
+      ? CANVAS_DEFAULT_FONT
+      : bodyFontFamily;
+
+  // Body text — measure and draw with the resolved concrete font
+  const measureFontSpec = `${bodyFontPx}px ${resolvedFamily}`;
+  const bodyFontSpec    = `${bodyFontPx}px ${EMOJI_FONT(resolvedFamily)}`;
+  const textWidthPx     = pw - leftMargin - rightMargin;
+  // Measure with exact font so line wrap points match the editor
+  ctx.font = measureFontSpec;
+  const wrappedLines = wrapWords(ctx, rawText, textWidthPx, measureFontSpec);
+  // Draw with emoji stack so emoji glyphs render correctly
   ctx.font      = bodyFontSpec;
   ctx.fillStyle = cssHex(tpl.pdfTextColor || "#202124");
-  const textWidthPx  = pw - leftMargin - rightMargin;
-  const wrappedLines = wrapWords(ctx, rawText, textWidthPx, bodyFontSpec);
   wrappedLines.slice(0, MAX_LINES_PER_PAGE).forEach((line, i) => {
     ctx.fillText(line, leftMargin, firstLineY + i * lineSpacing);
   });
