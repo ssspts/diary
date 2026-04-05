@@ -230,11 +230,13 @@ function PageSheet({ pageIndex, totalPages, pageData, template, font, photos, on
     const tpl   = TEMPLATES[template] || TEMPLATES.plain;
     const fDef  = HANDWRITING_FONTS[font] || HANDWRITING_FONTS.default;
     const decor = tpl.uiDecor;
-    const w           = Math.min(pageWidth, 780);
-    const sheetH      = Math.round(w * A4_RATIO);
-    const headerBandH = decor.headerSvgH || 0;
-    const footerBandH = decor.footerSvgH || 0;
-    const bodyH       = sheetH - headerBandH - footerBandH - PAGE_PADDING_H * 2 - (footerBandH > 0 ? 24 : 0);
+    const w            = Math.min(pageWidth, 780);
+    const headerBandH  = decor.headerSvgH || 0;
+    const footerBandH  = decor.footerSvgH || 0;
+    const textareaCapH = MAX_LINES_PER_PAGE * CANVAS.lineSpacing;
+    const sheetH       = headerBandH + footerBandH + PAGE_PADDING_H * 2
+        + (footerBandH > 0 ? 24 : 0) + textareaCapH;
+    const bodyH        = textareaCapH;
     const linesUsed   = countWrappedLines(pageData, fDef.editorFamily);
     const linesLeft   = MAX_LINES_PER_PAGE - linesUsed;
     const nearLimit   = linesLeft <= 3 && linesLeft > 0;
@@ -415,8 +417,8 @@ function EditorInner({
         if (!containerRef.current) return;
         const ro = new ResizeObserver((entries) => {
             const w = entries[0].contentRect.width;
-            // On mobile subtract less padding (12px each side = 24px), desktop 24px each side = 48px
-            const pad = isMobile ? 24 : 48;
+            // padding is 8px each side on mobile (16px total), 16px each side on desktop (32px total)
+            const pad = isMobile ? 16 : 32;
             setPageWidth(Math.max(280, w - pad));
         });
         ro.observe(containerRef.current);
@@ -470,17 +472,70 @@ function EditorInner({
     }, [setPages, markEdited]);
 
     const handlePageChange = useCallback((pageIdx, newText) => {
-        const fontFamily = (HANDWRITING_FONTS[pages[pageIdx]?.meta?.font] || HANDWRITING_FONTS.default).editorFamily;
+        const ta = textareaRefs.current[pageIdx];
+        const savedStart = ta?.selectionStart ?? newText.length;
+        const savedEnd   = ta?.selectionEnd   ?? newText.length;
+
         const updated = pages.map(ensureMeta);
-        if (countWrappedLines(newText, fontFamily) <= MAX_LINES_PER_PAGE) { updated[pageIdx] = { ...updated[pageIdx], data:newText }; setPages(updated); markEdited(); return; }
-        const rawLines = newText.split("\n"); let budget = MAX_LINES_PER_PAGE, splitIdx = rawLines.length;
-        for (let i = 0; i < rawLines.length; i++) { const wc = Math.max(1, Math.ceil((rawLines[i].length||1)/CHARS_PER_LINE)); if (budget-wc < 0) { splitIdx=i; break; } budget-=wc; }
-        updated[pageIdx] = { ...updated[pageIdx], data:rawLines.slice(0,splitIdx).join("\n") };
-        const nextIdx = pageIdx+1, overflow = rawLines.slice(splitIdx).join("\n");
-        if (nextIdx < updated.length) { updated[nextIdx] = { ...updated[nextIdx], data:overflow+(updated[nextIdx].data?"\n"+updated[nextIdx].data:"") }; }
-        else { updated.push({ ...ensureMeta(""), meta:{ template:currentTplKey, font:currentFntKey }, data:overflow }); }
+
+        // Helper: split text into [keep, overflow] at MAX_LINES_PER_PAGE
+        const splitAtLimit = (text, fontKey) => {
+            const fontFamily = (HANDWRITING_FONTS[fontKey] || HANDWRITING_FONTS.default).editorFamily;
+            if (countWrappedLines(text, fontFamily) <= MAX_LINES_PER_PAGE) return [text, null];
+            const ctx = getMCtx();
+            const fontSpec = `${CANVAS.lineSpacing * 0.7}px ${fontFamily || "sans-serif"}`;
+            ctx.font = fontSpec;
+            const rawLines = text.split("\n");
+            let usedLines = 0, splitPara = rawLines.length;
+            for (let i = 0; i < rawLines.length; i++) {
+                const paraLines = wrapWords(ctx, rawLines[i], CANVAS.textWidth, fontSpec).length || 1;
+                if (usedLines + paraLines > MAX_LINES_PER_PAGE) { splitPara = i; break; }
+                usedLines += paraLines;
+            }
+            return [rawLines.slice(0, splitPara).join("\n"), rawLines.slice(splitPara).join("\n")];
+        };
+
+        // Apply the edit to the current page
+        updated[pageIdx] = { ...updated[pageIdx], data: newText };
+
+        // Cascade overflow forward through all subsequent pages
+        let idx = pageIdx;
+        let currentPageOverflowed = false;
+        while (idx < updated.length) {
+            const fontKey = updated[idx]?.meta?.font || currentFntKey;
+            const [keep, overflow] = splitAtLimit(updated[idx].data || "", fontKey);
+            if (overflow === null) break;
+            if (idx === pageIdx) currentPageOverflowed = true;
+            updated[idx] = { ...updated[idx], data: keep };
+            const nextIdx = idx + 1;
+            if (nextIdx < updated.length) {
+                const existingNext = updated[nextIdx].data || "";
+                updated[nextIdx] = {
+                    ...updated[nextIdx],
+                    data: overflow + (existingNext ? "\n" + existingNext : ""),
+                };
+            } else {
+                updated.push({
+                    ...ensureMeta(""),
+                    meta: { template: currentTplKey, font: currentFntKey },
+                    data: overflow,
+                });
+            }
+            idx++;
+        }
+
         setPages(updated); markEdited();
-        setTimeout(() => { const t = textareaRefs.current[nextIdx]; if (t) { t.focus(); t.setSelectionRange(0,0); t.scrollTop=0; } scrollRef.current?.querySelectorAll("[data-page-sheet]")?.[nextIdx]?.scrollIntoView({ behavior:"smooth", block:"nearest" }); }, 30);
+
+        // Restore cursor to exactly where the user was typing.
+        // If the current page was trimmed, clamp the cursor to the kept text length.
+        if (currentPageOverflowed) {
+            const keptLen = (updated[pageIdx].data || "").length;
+            const clampedPos = Math.min(savedStart, keptLen);
+            requestAnimationFrame(() => {
+                const t = textareaRefs.current[pageIdx];
+                if (t) { t.focus(); t.setSelectionRange(clampedPos, Math.min(savedEnd, keptLen)); }
+            });
+        }
     }, [pages, currentTplKey, currentFntKey, setPages, markEdited]);
 
     const handleFontChange = (e) => { setPages((prev) => { const u = prev.map(ensureMeta); u[safeIdx] = { ...u[safeIdx], meta:{ template:currentTplKey, font:e.target.value } }; return u; }); markEdited(); };
@@ -577,18 +632,18 @@ function EditorInner({
                         <SvgOverlay svgFn={decor.headerSvg} height={decor.headerSvgH} style={{ bottom:0 }} />
                     </div>
 
-                    {/* Page stack — scrollable */}
+                    {/* Page stack — scrollable, fills full width */}
                     <div ref={(el) => { scrollRef.current = el; containerRef.current = el; }}
-                         style={{ flex:1, overflowY:"auto", padding: isMobile ? "12px" : "24px", display:"flex", flexDirection:"column", gap:PAGE_GAP, alignItems:"center" }}>
+                         style={{ flex:1, overflowY:"auto", padding: isMobile ? "8px" : "16px", display:"flex", flexDirection:"column", gap:PAGE_GAP }}>
                         {pages.map((page, idx) => {
                             const pg = ensureMeta(page);
                             return (
-                                <div key={idx} data-page-sheet={idx} style={{ width:"100%", maxWidth:780 }}>
+                                <div key={idx} data-page-sheet={idx} style={{ width:"100%" }}>
                                     <PageSheet
                                         pageIndex={idx} totalPages={pages.length}
                                         pageData={pg.data} template={pg.meta.template} font={pg.meta.font}
                                         photos={pg.photos||[]}
-                                        pageWidth={Math.min(pageWidth, 780)}
+                                        pageWidth={pageWidth}
                                         textareaRef={(el) => { textareaRefs.current[idx] = el; }}
                                         onChange={handlePageChange}
                                         onFocus={(i) => { setFocusedPage(i); setCurrentPage(i); }}
@@ -604,7 +659,7 @@ function EditorInner({
                                 </div>
                             );
                         })}
-                        <button onClick={addPage} style={{ marginTop:4, padding:"10px 28px", border:"2px dashed #bbb", borderRadius:8, background:"rgba(255,255,255,0.6)", color:"#666", cursor:"pointer", fontSize:13, fontWeight:500, width:"100%", maxWidth:780 }}>+ Add page</button>
+                        <button onClick={addPage} style={{ marginTop:4, padding:"10px 28px", border:"2px dashed #bbb", borderRadius:8, background:"rgba(255,255,255,0.6)", color:"#666", cursor:"pointer", fontSize:13, fontWeight:500, width:"100%" }}>+ Add page</button>
                     </div>
                 </div>
             </main>
