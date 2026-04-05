@@ -29,11 +29,6 @@ export const LEFT_MARGIN_MM    = 18;
 export const RIGHT_MARGIN_MM   = 14;
 export const TEXT_WIDTH_MM     = PAGE_W_MM - LEFT_MARGIN_MM - RIGHT_MARGIN_MM; // 178 mm
 
-// How many body lines fit on one page
-export const MAX_LINES_PER_PAGE = Math.floor(
-    (PAGE_H_MM - FIRST_LINE_Y_MM - FOOTER_H_MM - 4) / LINE_SPACING_MM
-); // ≈ 28 lines
-
 // Canvas (preview) dimensions at 96dpi equivalent
 export const CANVAS_W = 794;   // 210mm @ 96dpi  (210 * 96/25.4 ≈ 794)
 export const CANVAS_H = 1123;  // 297mm @ 96dpi
@@ -55,6 +50,20 @@ export const CANVAS = {
     rightMargin:Math.round(RIGHT_MARGIN_MM * MM_TO_PX),
     textWidth:  Math.round(TEXT_WIDTH_MM   * MM_TO_PX),
 };
+
+// How many body lines fit on one page — derived from the PREVIEW CANVAS geometry
+// so that the editor's overflow threshold matches exactly what the preview renders.
+//
+// Formula: how many lineSpacing-px steps fit between firstLineY and the bottom
+// of the canvas (with one lineSpacing as bottom breathing room).
+//
+// At current values:
+//   firstLineY = round(41 * 3.78) = 155px
+//   lineSpacing = round(7.5 * 3.78) = 28px
+//   floor((1123 - 155 - 28) / 28) = floor(940 / 28) = 33 lines
+export const MAX_LINES_PER_PAGE = Math.floor(
+    (CANVAS_H - CANVAS.firstLineY - CANVAS.lineSpacing) / CANVAS.lineSpacing
+);
 
 /**
  * Word-wrap a string to fit within `maxWidthPx` using canvas measureText.
